@@ -538,12 +538,13 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* 
 		}
 
 		b3AABB sweptBox = b3AABB_Union( box1, box2 );
-		b3DynamicTree_Query( staticTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
+		// DBVH Integration: Query broadphase via b3BroadPhase_Query wrapper
+		b3BroadPhase_Query( &world->broadPhase, b3_staticBody, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
 
 		if ( isBullet )
 		{
-			b3DynamicTree_Query( kinematicTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
-			b3DynamicTree_Query( dynamicTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
+			b3BroadPhase_Query( &world->broadPhase, b3_kinematicBody, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
+			b3BroadPhase_Query( &world->broadPhase, b3_dynamicBody, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
 		}
 	}
 
@@ -2110,10 +2111,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				b3AABB treeAABB = b3DynamicTree_GetAABB( dynamicTree, proxyId );
 				b3AABB shapeFatAABB = world->fatAABBs.data[shapeId];
 
-				if ( b3AABB_Contains( treeAABB, shapeFatAABB ) == false )
-				{
-					b3DynamicTree_EnlargeProxy( dynamicTree, proxyId, shapeFatAABB );
-				}
+				// DBVH Integration: Use b3BroadPhase_EnlargeProxy instead of direct b3DynamicTree_EnlargeProxy to support DBVH bullets
+				b3BroadPhase_EnlargeProxy( broadPhase, proxyKey, shapeFatAABB );
 
 				shapeId = shape->nextShapeId;
 			}

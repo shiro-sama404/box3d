@@ -190,6 +190,12 @@ B3_API void b3World_SetContactTuning( b3WorldId worldId, float hertz, float damp
 /// Usually in meters.
 B3_API void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance );
 
+// DBVH Integration: Configure runtime parameters (rebuild, metrics, fattening, etc.) for DBVH broadphase
+B3_API void b3World_SetDBVHConfig( b3WorldId worldId, const void* config );
+
+// DBVH Integration: Compute broadphase quality metrics and ground truth ideal comparison
+B3_API b3BroadPhaseQualityMetrics b3World_GetBroadPhaseQualityMetrics( b3WorldId worldId, b3BodyType bodyType, bool computeIdeal, float traversalCost, float isectCost );
+
 /// Get the contact point recycling distance. Usually in meters.
 B3_API float b3World_GetContactRecycleDistance( b3WorldId worldId );
 
@@ -241,6 +247,11 @@ B3_API void b3World_DumpMemoryStats( b3WorldId worldId );
 
 /// Dump shape bounds to box3d_bounds.txt
 B3_API void b3World_DumpShapeBounds( b3WorldId worldId, b3BodyType type );
+
+/// Rebuild the broadphase dynamic tree using top-down SAH.
+/// Call this after initial scene creation to optimize broadphase quality before simulation begins.
+B3_API void b3World_RebuildBroadPhase( b3WorldId worldId );
+B3_API void b3World_RebuildDynamicTree( b3WorldId worldId );
 
 /// This is for internal testing
 B3_API void b3World_RebuildStaticTree( b3WorldId worldId );

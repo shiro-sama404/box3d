@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.22)
 include(CMakeDependentOption)
 
 project(box3d
@@ -141,7 +141,8 @@ add_subdirectory(src)
 # This hides samples, test, and doxygen from apps that use box3d via FetchContent
 if(PROJECT_IS_TOP_LEVEL)
 	option(BOX3D_SAMPLES "Build the Box3D samples" ON)
-	option(BOX3D_BENCHMARKS "Build the Box3D benchmarks" OFF)
+	# option(BOX3D_BENCHMARKS "Build the Box3D benchmarks" ON)
+	option(BOX3D_BENCHMARKS "Build the Box3D benchmarks" ON)
 	option(BOX3D_DOCS "Build the Box3D documentation" OFF)
 	option(BOX3D_UNIT_TESTS "Build the Box3D unit tests" ON)
 

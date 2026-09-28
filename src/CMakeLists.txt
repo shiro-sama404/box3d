@@ -91,6 +91,10 @@ set(BOX3D_SOURCE_FILES
 	weld_joint.c
 	wheel_joint.c
 
+	# DBVH Integration: C API wrapper to interface C++ DBVH with C codebase
+	../dbvh/dbvh_c_api.cpp
+	../dbvh/dbvh_c_api.h
+
 	box3d.natvis
 )
 
@@ -217,7 +221,7 @@ elseif (UNIX)
 	endif()
 endif()
 
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "src" FILES ${BOX3D_SOURCE_FILES})
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/.." PREFIX "src" FILES ${BOX3D_SOURCE_FILES})
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/../include" PREFIX "include" FILES ${BOX3D_INCLUDE_FILES})
 
 add_library(box3d::box3d ALIAS box3d)

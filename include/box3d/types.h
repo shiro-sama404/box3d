@@ -213,7 +213,30 @@ typedef struct b3WorldDef
 
 	/// Used internally to detect a valid definition. DO NOT SET.
 	int internalValue;
+
+	// DBVH Integration: Enable DBVH instead of native b3DynamicTree for Broad Phase
+	bool useDBVH;
 } b3WorldDef;
+
+// DBVH Integration: Tree quality metrics and SAH costs for benchmark comparison
+typedef struct b3TreeQualityMetrics
+{
+	float sahCostStandard;
+	float sahCostNormalized;
+	float rootArea;
+	int treeHeight;
+	int leafCount;
+	int nodeCount;
+} b3TreeQualityMetrics;
+
+// DBVH Integration: Complete broadphase quality report including ideal ground truth comparison
+typedef struct b3BroadPhaseQualityMetrics
+{
+	b3TreeQualityMetrics current;
+	b3TreeQualityMetrics ideal;
+	float qualityRatioStandard;   // current.sahCostStandard / ideal.sahCostStandard
+	float qualityRatioNormalized; // current.sahCostNormalized / ideal.sahCostNormalized
+} b3BroadPhaseQualityMetrics;
 
 /// Use this to initialize your world definition
 /// @ingroup world

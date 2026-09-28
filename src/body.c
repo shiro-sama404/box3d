@@ -1153,7 +1153,10 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
 			// The body could be disabled
 			if ( shape->proxyKey != B3_NULL_INDEX )
 			{
-				b3BroadPhase_MoveProxy( broadPhase, shape->proxyKey, fatAABB );
+				// DBVH Integration: Extract body linear velocity to supply DBVH predictive AABB expansion
+				b3BodyState* state = b3GetBodyState( world, body );
+				b3Vec3 velocity = ( state != NULL ) ? state->linearVelocity : b3Vec3_zero;
+				b3BroadPhase_MoveProxy( broadPhase, shape->proxyKey, fatAABB, velocity );
 			}
 		}
 

@@ -726,6 +726,96 @@ float b3DynamicTree_GetAreaRatio( const b3DynamicTree* tree )
 	return internalArea / rootArea;
 }
 
+// DBVH Integration: Compute SAH quality metrics for native dynamic tree
+b3TreeQualityMetrics b3DynamicTree_ComputeQualityMetrics( const b3DynamicTree* tree, float traversalCost, float isectCost )
+{
+	b3TreeQualityMetrics metrics = { 0 };
+	if ( tree->proxyCount == 0 )
+	{
+		return metrics;
+	}
+
+	const b3TreeNode* nodes = tree->nodes;
+	metrics.rootArea = b3Perimeter( nodes[B3_ROOT_NODE].aabb );
+	metrics.treeHeight = b3GetNodeHeight( nodes + B3_ROOT_NODE );
+
+	float sumInternalSA = 0.0f;
+	float sumLeafSA = 0.0f;
+	float sumAllSA = metrics.rootArea;
+	int leafCount = tree->proxyCount;
+	int totalNodes = 1;
+
+	int nodeEnd = tree->nodeEnd;
+	for ( int i = 2; i < nodeEnd; ++i )
+	{
+		const b3TreeNode* node = nodes + i;
+		float sa = b3Perimeter( node->aabb );
+		sumAllSA += sa;
+		totalNodes++;
+
+		if ( b3IsLeaf( node ) )
+		{
+			sumLeafSA += sa;
+		}
+		else
+		{
+			sumInternalSA += sa;
+		}
+	}
+
+	metrics.sahCostStandard = traversalCost * sumInternalSA + isectCost * sumLeafSA;
+	metrics.sahCostNormalized = ( metrics.rootArea > 0.0f ) ? ( sumAllSA / metrics.rootArea ) : 0.0f;
+	metrics.leafCount = leafCount;
+	metrics.nodeCount = totalNodes;
+
+	return metrics;
+}
+
+// DBVH Integration: Extract all leaf AABBs from tree (order: minX, minY, minZ, maxX, maxY, maxZ)
+int b3DynamicTree_GetLeafAABBs( const b3DynamicTree* tree, float* outAABBArray, int maxCount )
+{
+	if ( tree->proxyCount == 0 )
+	{
+		return 0;
+	}
+
+	int count = 0;
+	const b3TreeNode* root = tree->nodes + B3_ROOT_NODE;
+	if ( b3IsLeaf( root ) && b3IsEmptyNode( root ) == false )
+	{
+		if ( count < maxCount && outAABBArray != NULL )
+		{
+			outAABBArray[count * 6 + 0] = root->aabb.lowerBound.x;
+			outAABBArray[count * 6 + 1] = root->aabb.lowerBound.y;
+			outAABBArray[count * 6 + 2] = root->aabb.lowerBound.z;
+			outAABBArray[count * 6 + 3] = root->aabb.upperBound.x;
+			outAABBArray[count * 6 + 4] = root->aabb.upperBound.y;
+			outAABBArray[count * 6 + 5] = root->aabb.upperBound.z;
+		}
+		count++;
+	}
+
+	int nodeEnd = tree->nodeEnd;
+	for ( int i = 2; i < nodeEnd; ++i )
+	{
+		const b3TreeNode* node = tree->nodes + i;
+		if ( b3IsLeaf( node ) && b3IsEmptyNode( node ) == false )
+		{
+			if ( count < maxCount && outAABBArray != NULL )
+			{
+				outAABBArray[count * 6 + 0] = node->aabb.lowerBound.x;
+				outAABBArray[count * 6 + 1] = node->aabb.lowerBound.y;
+				outAABBArray[count * 6 + 2] = node->aabb.lowerBound.z;
+				outAABBArray[count * 6 + 3] = node->aabb.upperBound.x;
+				outAABBArray[count * 6 + 4] = node->aabb.upperBound.y;
+				outAABBArray[count * 6 + 5] = node->aabb.upperBound.z;
+			}
+			count++;
+		}
+	}
+	return count;
+}
+
 b3AABB b3DynamicTree_GetRootBounds( const b3DynamicTree* tree )
 {
 	if ( tree->proxyCount == 0 )

@@ -25,6 +25,8 @@ b3WorldDef b3DefaultWorldDef( void )
 
 	def.enableSleep = true;
 	def.enableContinuous = true;
+	// DBVH Integration: Default broadphase selection (false = b3DynamicTree, true = DBVH)
+	def.useDBVH = false;
 	def.internalValue = B3_SECRET_COOKIE;
 	return def;
 }

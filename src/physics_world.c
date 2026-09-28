@@ -254,7 +254,8 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 	b3Array_Reserve( world->manifoldAllocators, 16 );
 	world->manifoldAllocatorMutex = b3CreateMutex();
 
-	b3CreateBroadPhase( &world->broadPhase, &def->capacity );
+	// DBVH Integration: Pass useDBVH flag to broadphase initialization
+	b3CreateBroadPhase( &world->broadPhase, &def->capacity, def->useDBVH );
 	b3CreateGraph( &world->constraintGraph, 16 );
 
 	// pools
@@ -1187,14 +1188,32 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 		bool haveBounds = false;
 		for ( int i = 0; i < b3_bodyTypeCount; ++i )
 		{
-			b3DynamicTree* tree = world->broadPhase.trees + i;
-			if ( b3DynamicTree_GetProxyCount( tree ) == 0 )
+			b3AABB bounds = { 0 };
+			bool hasNode = false;
+			// DBVH Integration: Query bounds from DBVH for dynamic bodies when enabled
+			if ( world->broadPhase.useDBVH && i == b3_dynamicBody )
 			{
-				continue;
+				float arr[6];
+				dbvh_get_root_bounds( world->broadPhase.dbvhTree, arr );
+				bounds.lowerBound = (b3Pos){ arr[0], arr[1], arr[2] };
+				bounds.upperBound = (b3Pos){ arr[3], arr[4], arr[5] };
+				hasNode = ( arr[0] <= arr[3] && arr[1] <= arr[4] && arr[2] <= arr[5] );
 			}
-			b3AABB bounds = b3DynamicTree_GetRootBounds( tree );
-			worldBounds = haveBounds ? b3AABB_Union( worldBounds, bounds ) : bounds;
-			haveBounds = true;
+			else
+			{
+				b3DynamicTree* tree = world->broadPhase.trees + i;
+				if ( b3DynamicTree_GetProxyCount( tree ) > 0 )
+				{
+					bounds = b3DynamicTree_GetRootBounds( tree );
+					hasNode = true;
+				}
+			}
+
+			if ( hasNode )
+			{
+				worldBounds = haveBounds ? b3AABB_Union( worldBounds, bounds ) : bounds;
+				haveBounds = true;
+			}
 		}
 		if ( haveBounds )
 		{
@@ -1409,7 +1428,8 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
-		b3DynamicTree_Query( world->broadPhase.trees + i, draw->drawingBounds, maskBits, false, DrawQueryCallback, &drawContext );
+		// DBVH Integration: Query drawing bounds using b3BroadPhase_Query wrapper
+		b3BroadPhase_Query( &world->broadPhase, (b3BodyType)i, draw->drawingBounds, maskBits, false, DrawQueryCallback, &drawContext );
 	}
 
 	uint32_t wordCount = world->debugBodySet.blockCount;
@@ -1723,22 +1743,38 @@ b3AABB b3World_GetBounds( b3WorldId worldId )
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
-		b3DynamicTree* tree = world->broadPhase.trees + i;
-		if ( b3DynamicTree_GetProxyCount( tree ) == 0 )
+		b3AABB bounds = { 0 };
+		bool hasNode = false;
+		// DBVH Integration: Query bounds from DBVH for dynamic bodies when enabled
+		if ( world->broadPhase.useDBVH && i == b3_dynamicBody )
 		{
-			continue;
-		}
-
-		b3AABB bounds = b3DynamicTree_GetRootBounds( world->broadPhase.trees + i );
-
-		if ( haveBounds )
-		{
-			worldBounds = b3AABB_Union( worldBounds, bounds );
+			float arr[6];
+			dbvh_get_root_bounds( world->broadPhase.dbvhTree, arr );
+			bounds.lowerBound = (b3Pos){ arr[0], arr[1], arr[2] };
+			bounds.upperBound = (b3Pos){ arr[3], arr[4], arr[5] };
+			hasNode = ( arr[0] <= arr[3] && arr[1] <= arr[4] && arr[2] <= arr[5] );
 		}
 		else
 		{
-			worldBounds = bounds;
-			haveBounds = true;
+			b3DynamicTree* tree = world->broadPhase.trees + i;
+			if ( b3DynamicTree_GetProxyCount( tree ) > 0 )
+			{
+				bounds = b3DynamicTree_GetRootBounds( tree );
+				hasNode = true;
+			}
+		}
+
+		if ( hasNode )
+		{
+			if ( haveBounds )
+			{
+				worldBounds = b3AABB_Union( worldBounds, bounds );
+			}
+			else
+			{
+				worldBounds = bounds;
+				haveBounds = true;
+			}
 		}
 	}
 
@@ -2127,6 +2163,28 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
 	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
 }
 
+// DBVH Integration: Update DBVH runtime configuration
+void b3World_SetDBVHConfig( b3WorldId worldId, const void* config )
+{
+	b3World* world = b3GetWorldFromId( worldId );
+	if ( world != NULL && config != NULL )
+	{
+		b3BroadPhase_SetConfig( &world->broadPhase, (const dbvh_config_t*)config );
+	}
+}
+
+// DBVH Integration: Compute broadphase quality metrics and ground truth ideal comparison
+b3BroadPhaseQualityMetrics b3World_GetBroadPhaseQualityMetrics( b3WorldId worldId, b3BodyType bodyType, bool computeIdeal, float traversalCost, float isectCost )
+{
+	b3World* world = b3GetWorldFromId( worldId );
+	b3BroadPhaseQualityMetrics metrics = { 0 };
+	if ( world != NULL )
+	{
+		b3BroadPhase_GetQualityMetrics( &world->broadPhase, bodyType, computeIdeal, traversalCost, isectCost, &metrics );
+	}
+	return metrics;
+}
+
 float b3World_GetContactRecycleDistance( b3WorldId worldId )
 {
 	b3World* world = b3GetWorldFromId( worldId );
@@ -2182,9 +2240,10 @@ b3Counters b3World_GetCounters( b3WorldId worldId )
 	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
 	s.staticTreeHeight = b3DynamicTree_GetHeight( staticTree );
 
-	b3DynamicTree* dynamicTree = world->broadPhase.trees + b3_dynamicBody;
 	b3DynamicTree* kinematicTree = world->broadPhase.trees + b3_kinematicBody;
-	s.treeHeight = b3MaxInt( b3DynamicTree_GetHeight( dynamicTree ), b3DynamicTree_GetHeight( kinematicTree ) );
+	// DBVH Integration: Read tree height from DBVH for counters
+	int dynamicHeight = world->broadPhase.useDBVH ? dbvh_get_height( world->broadPhase.dbvhTree ) : b3DynamicTree_GetHeight( world->broadPhase.trees + b3_dynamicBody );
+	s.treeHeight = b3MaxInt( dynamicHeight, b3DynamicTree_GetHeight( kinematicTree ) );
 
 	s.satCallCount = world->satCallCount;
 	s.satCacheHitCount = world->satCacheHitCount;
@@ -2615,8 +2674,9 @@ b3TreeStats b3World_OverlapAABB( b3WorldId worldId, b3AABB aabb, b3QueryFilter f
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
+		// DBVH Integration: Route overlap query through b3BroadPhase_Query
 		b3TreeStats treeResult =
-			b3DynamicTree_Query( world->broadPhase.trees + i, aabb, filter.maskBits, false, TreeQueryCallback, &worldContext );
+			b3BroadPhase_Query( &world->broadPhase, (b3BodyType)i, aabb, filter.maskBits, false, TreeQueryCallback, &worldContext );
 
 		treeStats.nodeVisits += treeResult.nodeVisits;
 		treeStats.leafVisits += treeResult.leafVisits;
@@ -2710,7 +2770,8 @@ b3TreeStats b3World_OverlapShape( b3WorldId worldId, b3Pos origin, const b3Shape
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
-		b3TreeStats treeResult = b3DynamicTree_Query( world->broadPhase.trees + i, aabb, filter.maskBits, false,
+		// DBVH Integration: Route shape overlap query through b3BroadPhase_Query
+		b3TreeStats treeResult = b3BroadPhase_Query( &world->broadPhase, (b3BodyType)i, aabb, filter.maskBits, false,
 													  b3TreeOverlapCallback, &worldContext );
 
 		treeStats.nodeVisits += treeResult.nodeVisits;
@@ -2812,7 +2873,8 @@ void b3World_CollideMover( b3WorldId worldId, b3Pos origin, const b3Capsule* mov
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
-		b3DynamicTree_Query( world->broadPhase.trees + i, aabb, filter.maskBits, false, TreeCollideCallback, &worldContext );
+		// DBVH Integration: Route mover collision query through b3BroadPhase_Query
+		b3BroadPhase_Query( &world->broadPhase, (b3BodyType)i, aabb, filter.maskBits, false, TreeCollideCallback, &worldContext );
 	}
 
 	if ( world->recording != NULL )
@@ -2919,8 +2981,9 @@ b3TreeStats b3World_CastRay( b3WorldId worldId, b3Pos origin, b3Vec3 translation
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
+		// DBVH Integration: Route raycast query through b3BroadPhase_RayCast
 		b3TreeStats treeResult =
-			b3DynamicTree_RayCast( world->broadPhase.trees + i, &input, filter.maskBits, false, RayCastCallback, &worldContext );
+			b3BroadPhase_RayCast( &world->broadPhase, (b3BodyType)i, &input, filter.maskBits, false, RayCastCallback, &worldContext );
 		treeStats.nodeVisits += treeResult.nodeVisits;
 		treeStats.leafVisits += treeResult.leafVisits;
 
@@ -2991,8 +3054,9 @@ b3RayResult b3World_CastRayClosest( b3WorldId worldId, b3Pos origin, b3Vec3 tran
 
 	for ( int i = 0; i < b3_bodyTypeCount; ++i )
 	{
+		// DBVH Integration: Route closest raycast query through b3BroadPhase_RayCast
 		b3TreeStats treeResult =
-			b3DynamicTree_RayCast( world->broadPhase.trees + i, &input, filter.maskBits, false, RayCastCallback, &worldContext );
+			b3BroadPhase_RayCast( &world->broadPhase, (b3BodyType)i, &input, filter.maskBits, false, RayCastCallback, &worldContext );
 		result.nodeVisits += treeResult.nodeVisits;
 		result.leafVisits += treeResult.leafVisits;
 
@@ -3448,7 +3512,8 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
 	b3AABB localBox = { { -extent, -extent, -extent }, { extent, extent, extent } };
 	b3AABB aabb = b3OffsetAABB( localBox, position );
 
-	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
+	// DBVH Integration: Route explosion query through b3BroadPhase_Query
+	b3BroadPhase_Query( &world->broadPhase, b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
 
 	world->locked = false;
 }
@@ -3465,6 +3530,20 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
 
 	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
 	b3DynamicTree_Rebuild( staticTree, true );
+}
+
+void b3World_RebuildBroadPhase( b3WorldId worldId )
+{
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world != NULL )
+	{
+		b3BroadPhase_Rebuild( &world->broadPhase );
+	}
+}
+
+void b3World_RebuildDynamicTree( b3WorldId worldId )
+{
+	b3World_RebuildBroadPhase( worldId );
 }
 
 void b3World_EnableSpeculative( b3WorldId worldId, bool flag )

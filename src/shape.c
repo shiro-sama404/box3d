@@ -1370,7 +1370,8 @@ static void b3ResetProxy( b3World* world, b3Shape* shape, bool wakeBodies, bool 
 		}
 		else
 		{
-			b3BroadPhase_MoveProxy( &world->broadPhase, shape->proxyKey, *fatAABB );
+			// DBVH Integration: Pass b3Vec3_zero on shape reset/move
+			b3BroadPhase_MoveProxy( &world->broadPhase, shape->proxyKey, *fatAABB, b3Vec3_zero );
 		}
 	}
 	else

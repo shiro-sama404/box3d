@@ -88,6 +88,12 @@ B3_API int b3DynamicTree_GetHeight( const b3DynamicTree* tree );
 /// Get the ratio of the sum of the node areas to the root area.
 B3_API float b3DynamicTree_GetAreaRatio( const b3DynamicTree* tree );
 
+// DBVH Integration: Compute SAH quality metrics for native dynamic tree
+B3_API b3TreeQualityMetrics b3DynamicTree_ComputeQualityMetrics( const b3DynamicTree* tree, float traversalCost, float isectCost );
+
+// DBVH Integration: Extract all leaf AABBs from tree (order: minX, minY, minZ, maxX, maxY, maxZ)
+B3_API int b3DynamicTree_GetLeafAABBs( const b3DynamicTree* tree, float* outAABBArray, int maxCount );
+
 /// Get the bounding box that contains the entire tree
 B3_API b3AABB b3DynamicTree_GetRootBounds( const b3DynamicTree* tree );
 
