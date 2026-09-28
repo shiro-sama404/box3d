@@ -12,3 +12,9 @@ CMakeUserPresets.json
 .fetchcontent-cache/
 *.b3rec
 *.zip
+
+*.exe
+test_dbvh
+test_native
+test_plots/
+relatorios_tcc/

@@ -24,6 +24,8 @@
 #include "utils.h"
 
 #include "box3d/box3d.h"
+// DBVH Integration: Include DBVH C API for sample controls and inspector sync
+#include "../dbvh/dbvh_c_api.h"
 
 #include <ctype.h>
 #include <filesystem>
@@ -386,6 +388,8 @@ void Sample::CreateWorld( b3Capacity* capacity )
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.workerCount = m_context->workerCount;
 	worldDef.enableSleep = m_context->enableSleep;
+	// DBVH Integration: Forward DBVH toggle to b3WorldDef
+	worldDef.useDBVH = m_context->useDBVH;
 	AttachToWorldDef( &worldDef );
 	if ( capacity != nullptr )
 	{
@@ -394,6 +398,20 @@ void Sample::CreateWorld( b3Capacity* capacity )
 	m_worldId = b3CreateWorld( &worldDef );
 
 	b3World_SetContactRecycleDistance( m_worldId, m_context->recycleDistance );
+
+	// DBVH Integration: Push initial DBVH config parameters to the created world
+	dbvh_config_t dbvhCfg;
+	dbvhCfg.enableRebuild = m_context->dbvhEnableRebuild;
+	dbvhCfg.enableFattening = m_context->dbvhEnableFattening;
+	dbvhCfg.enablePredictive = m_context->dbvhEnablePredictive;
+	dbvhCfg.enableRotations = m_context->dbvhEnableRotations;
+	dbvhCfg.degradationMetric = static_cast<dbvh_degradation_metric_t>( m_context->dbvhMetric );
+	dbvhCfg.rebuildThreshold = ( m_context->dbvhMetric == 0 ) ? m_context->dbvhAreaRatioThreshold : m_context->dbvhSubtreeSAHThreshold;
+	dbvhCfg.areaRatioThreshold = m_context->dbvhAreaRatioThreshold;
+	dbvhCfg.subtreeSAHThreshold = m_context->dbvhSubtreeSAHThreshold;
+	dbvhCfg.rebuildInterval = m_context->dbvhRebuildInterval;
+	dbvhCfg.maxRebuildsPerFrame = m_context->dbvhMaxRebuildsPerFrame;
+	b3World_SetDBVHConfig( m_worldId, &dbvhCfg );
 }
 
 void Sample::ResetText()
@@ -420,6 +438,23 @@ void Sample::Step()
 	{
 		timeStep = m_context->hertz > 0.0f ? 1.0f / m_context->hertz : 0.0f;
 		m_context->singleStep = b3MaxInt( 0, m_context->singleStep - 1 );
+	}
+
+	// DBVH Integration: Keep runtime DBVH configuration synchronized with UI inspector state each step
+	if ( B3_IS_NON_NULL( m_worldId ) )
+	{
+		dbvh_config_t dbvhCfg;
+		dbvhCfg.enableRebuild = m_context->dbvhEnableRebuild;
+		dbvhCfg.enableFattening = m_context->dbvhEnableFattening;
+		dbvhCfg.enablePredictive = m_context->dbvhEnablePredictive;
+		dbvhCfg.enableRotations = m_context->dbvhEnableRotations;
+		dbvhCfg.degradationMetric = static_cast<dbvh_degradation_metric_t>( m_context->dbvhMetric );
+		dbvhCfg.rebuildThreshold = ( m_context->dbvhMetric == 0 ) ? m_context->dbvhAreaRatioThreshold : m_context->dbvhSubtreeSAHThreshold;
+		dbvhCfg.areaRatioThreshold = m_context->dbvhAreaRatioThreshold;
+		dbvhCfg.subtreeSAHThreshold = m_context->dbvhSubtreeSAHThreshold;
+		dbvhCfg.rebuildInterval = m_context->dbvhRebuildInterval;
+		dbvhCfg.maxRebuildsPerFrame = m_context->dbvhMaxRebuildsPerFrame;
+		b3World_SetDBVHConfig( m_worldId, &dbvhCfg );
 	}
 
 	if ( B3_IS_NON_NULL( m_mouseJointId ) && b3Joint_IsValid( m_mouseJointId ) == false )
@@ -1374,6 +1409,11 @@ void SelectSample( SampleContext* context, int selection, bool restart )
 		SetShadowSplits( SHADOW_SPLIT_NEAR, b3ClampFloat( diagonal, SHADOW_SPLIT_FAR, SHADOW_SPLIT_FAR_MAX ) );
 	}
 
+	if ( context->useDBVH && context->sample != nullptr && B3_IS_NON_NULL( context->sample->m_worldId ) )
+	{
+		b3World_RebuildBroadPhase( context->sample->m_worldId );
+	}
+
 	// Samples read restart only while constructing, to keep the camera across a
 	// restart. Clear it so a later switch starts fresh.
 	context->restart = false;
@@ -2052,6 +2092,43 @@ static void DrawInfoPanel( SampleContext* context )
 		{
 			context->workerCount = b3ClampInt( context->workerCount, 1, B3_MAX_WORKERS );
 			SelectSample( context, context->sampleIndex, true );
+		}
+
+		// DBVH Integration: Checkbox and expandable controls for DBVH experimentation
+		if ( ImGui::Checkbox( "DBVH Broadphase##Solver", &context->useDBVH ) )
+		{
+			SelectSample( context, context->sampleIndex, true );
+		}
+
+		if ( context->useDBVH )
+		{
+			ImGui::Indent();
+			ImGui::Checkbox( "Enable Rebuild##DBVH", &context->dbvhEnableRebuild );
+			if ( context->dbvhEnableRebuild )
+			{
+				const char* metrics[] = { "Area Ratio (Growth)", "Subtree SAH Cost (alpha_k)" };
+				ImGui::Combo( "Metric##DBVH", &context->dbvhMetric, metrics, IM_ARRAYSIZE( metrics ) );
+				if ( context->dbvhMetric == 0 )
+				{
+					ImGui::SliderFloat( "Threshold (Area Ratio)##DBVH", &context->dbvhAreaRatioThreshold, 1.05f, 3.00f, "%.2fx" );
+					context->dbvhRebuildThreshold = context->dbvhAreaRatioThreshold;
+				}
+				else
+				{
+					ImGui::SliderFloat( "Threshold (alpha SAH)##DBVH", &context->dbvhSubtreeSAHThreshold, 0.05f, 3.00f, "%.2f" );
+					context->dbvhRebuildThreshold = context->dbvhSubtreeSAHThreshold;
+				}
+				ImGui::SliderInt( "Check Interval##DBVH", &context->dbvhRebuildInterval, 1, 120, "%d frames" );
+				ImGui::SliderInt( "Rebuild Budget##DBVH", &context->dbvhMaxRebuildsPerFrame, 1, 10, "%d subtrees" );
+			}
+			ImGui::Checkbox( "Enable Fattening##DBVH", &context->dbvhEnableFattening );
+			ImGui::Checkbox( "Predictive Expansion##DBVH", &context->dbvhEnablePredictive );
+			ImGui::Checkbox( "Tree Rotations##DBVH", &context->dbvhEnableRotations );
+			if ( ImGui::Button( "Rebuild Broadphase (SAH)##DBVH" ) )
+			{
+				b3World_RebuildBroadPhase( context->sample->m_worldId );
+			}
+			ImGui::Unindent();
 		}
 
 		float recyclingCentimeters = 100.0f * context->recycleDistance;

@@ -68,6 +68,8 @@ extern int WorldTest( void );
 
 int main( int argc, char** argv )
 {
+	setvbuf( stdout, NULL, _IONBF, 0 );
+	setvbuf( stderr, NULL, _IONBF, 0 );
 #if defined( _WIN32 )
 	// Enable memory-leak reports
 	//_CrtSetBreakAlloc(196);

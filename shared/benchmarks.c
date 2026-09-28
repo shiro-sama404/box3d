@@ -7,6 +7,7 @@
 #include "utils.h"
 
 #include "box3d/box3d.h"
+#include "box3d/math_functions.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -903,13 +904,24 @@ void StepJunkyard( b3WorldId worldId, int stepCount )
 // Huge pile of large convexes, ported from PEEL. Each convex is the hull of 32 random points on a
 // sphere. A fixed LCG seed makes the hull identical across runs so results compare directly.
 
+static int g_benchmarkActorCount = 0;
+
+void SetBenchmarkActorCount( int actorCount )
+{
+	g_benchmarkActorCount = actorCount;
+}
+
+int GetBenchmarkActorCount( void )
+{
+	return g_benchmarkActorCount;
+}
+
 void GetConvexPileCapacity( b3Capacity* capacity )
 {
-#ifdef NDEBUG
-	capacity->dynamicShapeCount = 5120;
-	capacity->dynamicBodyCount = 5120;
-	capacity->contactCount = 50 * 1024;
-#endif
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 640 : 5120 );
+	capacity->dynamicShapeCount = n + 64;
+	capacity->dynamicBodyCount = n + 64;
+	capacity->contactCount = b3MaxInt( 50 * 1024, n * 24 );
 }
 
 // PEEL's BasicRandom, kept verbatim so the point set matches the original
@@ -948,22 +960,39 @@ static b3Vec3 UnitRandomPoint( ConvexPileRandom* rng )
 
 void CreateConvexPile( b3WorldId worldId )
 {
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( ( BENCHMARK_DEBUG ? 10 : 80 ) * 64 );
+
+	int countX = 8;
+	int countZ = 8;
+	if ( n > 4096 )
+	{
+		countX = 32;
+		countZ = 32;
+	}
+	else if ( n > 1024 )
+	{
+		countX = 16;
+		countZ = 16;
+	}
+
+	float amplitude = 2.0f;
+	float scatter = 2.0f * amplitude;
+
+	// Scale ground extent proportionally so collapsing piles never spill into the void
+	float pileRadius = 0.5f * (float)b3MaxInt( countX, countZ ) * scatter;
+	float groundExtent = b3MaxFloat( 250.0f, pileRadius * 5.0f );
+
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.position = (b3Pos){ 0.0f, -1.0f, 0.0f };
 		b3BodyId groundId = b3CreateBody( worldId, &bodyDef );
 
-		b3BoxHull box = b3MakeBoxHull( 250.0f, 1.0f, 250.0f );
+		b3BoxHull box = b3MakeBoxHull( groundExtent, 1.0f, groundExtent );
 		b3ShapeDef shapeDef = b3DefaultShapeDef();
 		g_groundShapeId = b3CreateHullShape( groundId, &shapeDef, &box.base );
 	}
 
-	int countX = 8;
-	int countZ = 8;
-	int layers = BENCHMARK_DEBUG ? 10 : 80;
-	float amplitude = 2.0f;
 	int pointCount = 32;
-	float scatter = 2.0f * amplitude;
 
 	// Hull around random points on a sphere of radius amplitude
 	assert( pointCount <= 64 );
@@ -980,12 +1009,13 @@ void CreateConvexPile( b3WorldId worldId )
 	bodyDef.type = b3_dynamicBody;
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 
-	// Grid tall enough to collapse into a pile
-	for ( int layer = 0; layer < layers; ++layer )
+	// Grid tall enough to collapse into a pile, spawning exactly n dynamic bodies
+	int spawned = 0;
+	for ( int layer = 0; spawned < n; ++layer )
 	{
-		for ( int z = 0; z < countZ; ++z )
+		for ( int z = 0; z < countZ && spawned < n; ++z )
 		{
-			for ( int x = 0; x < countX; ++x )
+			for ( int x = 0; x < countX && spawned < n; ++x )
 			{
 				float posX = ( (float)x - 0.5f * (float)countX ) * scatter;
 				float posZ = ( (float)z - 0.5f * (float)countZ ) * scatter;
@@ -994,6 +1024,7 @@ void CreateConvexPile( b3WorldId worldId )
 				bodyDef.position = (b3Pos){ posX, posY, posZ };
 				b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
 				b3CreateHullShape( bodyId, &shapeDef, convex );
+				spawned++;
 			}
 		}
 	}

@@ -50,6 +50,11 @@ void GetSleepCapacity( b3Capacity* capacity );
 void CreateSleep( b3WorldId worldId );
 void StepSleep( b3WorldId worldId, int stepCount );
 
+void SetBenchmarkActorCount( int actorCount );
+int GetBenchmarkActorCount( void );
+
+// void CreateSpinner( b3WorldId worldId );
+// float StepSpinner( b3WorldId worldId, int stepCount );
 // void CreateSmash( b3WorldId worldId );
 // void CreateTumbler( b3WorldId worldId );
 

@@ -1479,6 +1479,43 @@ public:
 		SetGroundShape( GetGroundShapeId() );
 	}
 
+	bool DrawControls() override
+	{
+		static const int actorCounts[] = { 128, 256, 512, 640, 1024, 2048, 4096, 8192, 16384 };
+		static const char* actorLabels[] = { "128", "256", "512", "640 (Default)", "1024", "2048", "4096", "8192", "16384" };
+		static int currentSelection = 3;
+
+		int currentCount = GetBenchmarkActorCount();
+		if ( currentCount > 0 )
+		{
+			for ( int i = 0; i < (int)IM_ARRAYSIZE( actorCounts ); ++i )
+			{
+				if ( actorCounts[i] == currentCount )
+				{
+					currentSelection = i;
+					break;
+				}
+			}
+		}
+
+		ImGui::SeparatorText( "Scale Benchmark" );
+		if ( ImGui::Combo( "Actor Count", &currentSelection, actorLabels, IM_ARRAYSIZE( actorLabels ) ) )
+		{
+			SetBenchmarkActorCount( actorCounts[currentSelection] );
+			m_context->restart = true;
+			return true;
+		}
+
+		if ( ImGui::Button( "Restart With Scale" ) )
+		{
+			SetBenchmarkActorCount( actorCounts[currentSelection] );
+			m_context->restart = true;
+			return true;
+		}
+
+		return false;
+	}
+
 	static Sample* Create( SampleContext* context )
 	{
 		return new BenchmarkConvexPile( context );

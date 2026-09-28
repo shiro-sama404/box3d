@@ -25,6 +25,7 @@
 #define RUN_SUBTEST( T )                                                                                                         \
 	do                                                                                                                           \
 	{                                                                                                                            \
+		printf( "  running: " #T "\n" );                                                                                         \
 		int result = T();                                                                                                        \
 		if ( result == 1 )                                                                                                       \
 		{                                                                                                                        \

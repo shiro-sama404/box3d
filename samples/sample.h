@@ -64,6 +64,18 @@ struct SampleContext
 	bool enableWarmStarting = true;
 	bool enableContinuous = true;
 	bool enableSleep = true;
+	// DBVH Integration: SampleContext configuration options for DBVH broadphase inspection and research
+	bool useDBVH = false;
+	bool dbvhEnableRebuild = true;
+	int dbvhMetric = 0; // 0: AreaRatio, 1: SubtreeSAH
+	float dbvhAreaRatioThreshold = 1.80f;
+	float dbvhSubtreeSAHThreshold = 1.80f;
+	float dbvhRebuildThreshold = 1.80f;
+	int dbvhRebuildInterval = 30;
+	int dbvhMaxRebuildsPerFrame = 2;
+	bool dbvhEnableFattening = true;
+	bool dbvhEnablePredictive = false;
+	bool dbvhEnableRotations = false;
 	bool pause = false;
 	int singleStep = 0;
 	bool restart = false;
