@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Relatório de Escalabilidade Assintótica - Box3D vs DBVH</title>
+<style>
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #11111b; color: #cdd6f4; margin: 0; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { color: #89b4fa; font-size: 26px; border-bottom: 2px solid #313244; padding-bottom: 12px; margin-bottom: 20px; }
+  h2 { color: #f9e2af; font-size: 20px; margin-top: 30px; }
+  .card { background: #1e1e2e; border-radius: 12px; padding: 20px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border: 1px solid #313244; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid #313244; }
+  th { background: #181825; color: #a6adc8; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  tr:hover { background: #24273a; }
+  .badge-win { color: #a6e3a1; font-weight: bold; }
+  .badge-loss { color: #f38ba8; }
+  .chart-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  @media (min-width: 900px) { .chart-grid { grid-template-columns: 1fr 1fr; } }
+  .chart-box { background: #181825; border-radius: 12px; padding: 12px; display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Relatório de Escalabilidade Assintótica: DBVH vs Box3D Nativo</h1>
+  <div class="card">
+    <p>Comparativo sistemático de desempenho entre a <strong>DBVH (Árvore Dinâmica Otimizada por SAH)</strong> e a <strong>b3DynamicTree nativa do Box3D</strong> com quantidade variável de atores de 128 a 16.384 corpos.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Atores (N)</th>
+          <th>Pairs Nativo (ms)</th>
+          <th>Pairs DBVH (ms)</th>
+          <th>Speedup Pairs</th>
+          <th>Contatos Nativo</th>
+          <th>Contatos DBVH</th>
+          <th>Step Nativo (ms)</th>
+          <th>Step DBVH (ms)</th>
+          <th>H Nativo</th>
+          <th>H DBVH</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1,024</strong></td>
+          <td>3.6879</td>
+          <td>3.5152</td>
+          <td class="badge-win">1.05x</td>
+          <td>8468</td>
+          <td>8519</td>
+          <td>159.62</td>
+          <td>143.57</td>
+          <td>21</td>
+          <td>12</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Curvas Assintóticas e Comportamento em Escala</h2>
+  <div class="chart-grid">
+    <div class="chart-box"><svg width="760" height="360" xmlns="http://www.w3.org/2000/svg" style="background:#181825;border-radius:12px;margin:10px 0;">
+<text x="380.0" y="30" fill="#cdd6f4" font-size="16" font-weight="bold" font-family="system-ui,sans-serif" text-anchor="middle">Tempo de Broad-Phase: Pairs (ms) vs Quantidade de Atores</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="304" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">0.00</text>
+<line x1="80" y1="250.0000000135579" x2="720" y2="250.0000000135579" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="254.0000000135579" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">0.74</text>
+<line x1="80" y1="200.00000002711576" x2="720" y2="200.00000002711576" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="204.00000002711576" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">1.48</text>
+<line x1="80" y1="150.00000004067363" x2="720" y2="150.00000004067363" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="154.00000004067363" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">2.21</text>
+<line x1="80" y1="100.00000005423152" x2="720" y2="100.00000005423152" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="104.00000005423152" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">2.95</text>
+<line x1="80" y1="50.00000006778939" x2="720" y2="50.00000006778939" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="54.00000006778939" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">3.69</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#45475a" stroke-width="1.5"/>
+<line x1="400.0" y1="300" x2="400.0" y2="306" stroke="#45475a"/>
+<text x="400.0" y="322" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="middle">1024</text>
+<text x="380.0" y="348" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Número de Corpos (Atores)</text>
+<text transform="rotate(-90)" x="-180.0" y="22" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Tempo Médio Pairs (ms)</text>
+<circle cx="400.0" cy="50.0" r="4.5" fill="#f38ba8" stroke="#181825" stroke-width="1.5"/>
+<circle cx="400.0" cy="61.7" r="4.5" fill="#89b4fa" stroke="#181825" stroke-width="1.5"/>
+<line x1="90" y1="66" x2="110" y2="66" stroke="#f38ba8" stroke-width="3"/>
+<circle cx="100" cy="66" r="3.5" fill="#f38ba8"/>
+<text x="116" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">Box3D Nativo</text>
+<line x1="250" y1="66" x2="270" y2="66" stroke="#89b4fa" stroke-width="3"/>
+<circle cx="260" cy="66" r="3.5" fill="#89b4fa"/>
+<text x="276" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">DBVH</text>
+</svg></div>
+    <div class="chart-box"><svg width="760" height="360" xmlns="http://www.w3.org/2000/svg" style="background:#181825;border-radius:12px;margin:10px 0;">
+<text x="380.0" y="30" fill="#cdd6f4" font-size="16" font-weight="bold" font-family="system-ui,sans-serif" text-anchor="middle">Redução de Pares: Contatos Ativos Médios vs Quantidade de Atores</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="304" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">0.00</text>
+<line x1="80" y1="250.00000000000588" x2="720" y2="250.00000000000588" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="254.00000000000588" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">1703.7</text>
+<line x1="80" y1="200.00000000001177" x2="720" y2="200.00000000001177" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="204.00000000001177" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">3407.5</text>
+<line x1="80" y1="150.00000000001762" x2="720" y2="150.00000000001762" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="154.00000000001762" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">5111.2</text>
+<line x1="80" y1="100.0000000000235" x2="720" y2="100.0000000000235" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="104.0000000000235" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">6815.0</text>
+<line x1="80" y1="50.00000000002936" x2="720" y2="50.00000000002936" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="54.00000000002936" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">8518.7</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#45475a" stroke-width="1.5"/>
+<line x1="400.0" y1="300" x2="400.0" y2="306" stroke="#45475a"/>
+<text x="400.0" y="322" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="middle">1024</text>
+<text x="380.0" y="348" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Número de Corpos (Atores)</text>
+<text transform="rotate(-90)" x="-180.0" y="22" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Média de Contatos/Pares</text>
+<circle cx="400.0" cy="51.5" r="4.5" fill="#f38ba8" stroke="#181825" stroke-width="1.5"/>
+<circle cx="400.0" cy="50.0" r="4.5" fill="#a6e3a1" stroke="#181825" stroke-width="1.5"/>
+<line x1="90" y1="66" x2="110" y2="66" stroke="#f38ba8" stroke-width="3"/>
+<circle cx="100" cy="66" r="3.5" fill="#f38ba8"/>
+<text x="116" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">Box3D Nativo</text>
+<line x1="250" y1="66" x2="270" y2="66" stroke="#a6e3a1" stroke-width="3"/>
+<circle cx="260" cy="66" r="3.5" fill="#a6e3a1"/>
+<text x="276" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">DBVH</text>
+</svg></div>
+    <div class="chart-box"><svg width="760" height="360" xmlns="http://www.w3.org/2000/svg" style="background:#181825;border-radius:12px;margin:10px 0;">
+<text x="380.0" y="30" fill="#cdd6f4" font-size="16" font-weight="bold" font-family="system-ui,sans-serif" text-anchor="middle">Tempo Total de Simulação: Step (ms) vs Quantidade de Atores</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="304" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">0.00</text>
+<line x1="80" y1="250.00000000031326" x2="720" y2="250.00000000031326" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="254.00000000031326" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">31.9</text>
+<line x1="80" y1="200.0000000006265" x2="720" y2="200.0000000006265" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="204.0000000006265" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">63.8</text>
+<line x1="80" y1="150.00000000093974" x2="720" y2="150.00000000093974" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="154.00000000093974" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">95.8</text>
+<line x1="80" y1="100.000000001253" x2="720" y2="100.000000001253" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="104.000000001253" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">127.7</text>
+<line x1="80" y1="50.00000000156621" x2="720" y2="50.00000000156621" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="54.00000000156621" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">159.6</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#45475a" stroke-width="1.5"/>
+<line x1="400.0" y1="300" x2="400.0" y2="306" stroke="#45475a"/>
+<text x="400.0" y="322" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="middle">1024</text>
+<text x="380.0" y="348" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Número de Corpos (Atores)</text>
+<text transform="rotate(-90)" x="-180.0" y="22" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Tempo Médio Step (ms)</text>
+<circle cx="400.0" cy="50.0" r="4.5" fill="#f38ba8" stroke="#181825" stroke-width="1.5"/>
+<circle cx="400.0" cy="75.1" r="4.5" fill="#fab387" stroke="#181825" stroke-width="1.5"/>
+<line x1="90" y1="66" x2="110" y2="66" stroke="#f38ba8" stroke-width="3"/>
+<circle cx="100" cy="66" r="3.5" fill="#f38ba8"/>
+<text x="116" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">Box3D Nativo</text>
+<line x1="250" y1="66" x2="270" y2="66" stroke="#fab387" stroke-width="3"/>
+<circle cx="260" cy="66" r="3.5" fill="#fab387"/>
+<text x="276" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">DBVH</text>
+</svg></div>
+    <div class="chart-box"><svg width="760" height="360" xmlns="http://www.w3.org/2000/svg" style="background:#181825;border-radius:12px;margin:10px 0;">
+<text x="380.0" y="30" fill="#cdd6f4" font-size="16" font-weight="bold" font-family="system-ui,sans-serif" text-anchor="middle">Qualidade Topológica: Altura da Árvore vs Quantidade de Atores</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="304" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">0.00</text>
+<line x1="80" y1="250.00000000238094" x2="720" y2="250.00000000238094" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="254.00000000238094" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">4.20</text>
+<line x1="80" y1="200.0000000047619" x2="720" y2="200.0000000047619" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="204.0000000047619" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">8.40</text>
+<line x1="80" y1="150.0000000071429" x2="720" y2="150.0000000071429" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="154.0000000071429" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">12.6</text>
+<line x1="80" y1="100.0000000095238" x2="720" y2="100.0000000095238" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="104.0000000095238" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">16.8</text>
+<line x1="80" y1="50.000000011904746" x2="720" y2="50.000000011904746" stroke="#313244" stroke-dasharray="4,4"/>
+<text x="68" y="54.000000011904746" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="end">21.0</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#45475a" stroke-width="1.5"/>
+<line x1="400.0" y1="300" x2="400.0" y2="306" stroke="#45475a"/>
+<text x="400.0" y="322" fill="#a6adc8" font-size="11" font-family="system-ui,sans-serif" text-anchor="middle">1024</text>
+<text x="380.0" y="348" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Número de Corpos (Atores)</text>
+<text transform="rotate(-90)" x="-180.0" y="22" fill="#bac2de" font-size="12" font-family="system-ui,sans-serif" text-anchor="middle">Altura da Árvore (H)</text>
+<circle cx="400.0" cy="50.0" r="4.5" fill="#f38ba8" stroke="#181825" stroke-width="1.5"/>
+<circle cx="400.0" cy="157.1" r="4.5" fill="#cba6f7" stroke="#181825" stroke-width="1.5"/>
+<line x1="90" y1="66" x2="110" y2="66" stroke="#f38ba8" stroke-width="3"/>
+<circle cx="100" cy="66" r="3.5" fill="#f38ba8"/>
+<text x="116" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">Box3D Nativo</text>
+<line x1="250" y1="66" x2="270" y2="66" stroke="#cba6f7" stroke-width="3"/>
+<circle cx="260" cy="66" r="3.5" fill="#cba6f7"/>
+<text x="276" y="70" fill="#cdd6f4" font-size="11" font-family="system-ui,sans-serif">DBVH</text>
+</svg></div>
+  </div>
+</div>
+</body>
+</html>

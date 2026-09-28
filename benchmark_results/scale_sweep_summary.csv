@@ -1,0 +1,2 @@
+actors,native_pairs_ms,dbvh_pairs_ms,pairs_speedup,native_contacts,dbvh_contacts,native_step_ms,dbvh_step_ms,native_collide_ms,dbvh_collide_ms,native_tree_height,dbvh_tree_height
+1024,3.6879,3.5152,1.05,8467.8,8518.7,159.6194,143.5664,130.7807,117.2292,21,12
