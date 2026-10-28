@@ -214,8 +214,8 @@ typedef struct b3WorldDef
 	/// Used internally to detect a valid definition. DO NOT SET.
 	int internalValue;
 
-	// DBVH Integration: Enable DBVH instead of native b3DynamicTree for Broad Phase
-	bool useDBVH;
+	// SDBVH Integration: Enable SDBVH instead of native b3DynamicTree for Broad Phase
+	bool useSDBVH;
 } b3WorldDef;
 
 // DBVH Integration: Tree quality metrics and SAH costs for benchmark comparison

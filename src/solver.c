@@ -494,9 +494,6 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* 
 	xf2.q = sweep.q2;
 	xf2.p = b3Sub( sweep.c2, b3RotateVector( sweep.q2, sweep.localCenter ) );
 
-	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
-	b3DynamicTree* kinematicTree = world->broadPhase.trees + b3_kinematicBody;
-	b3DynamicTree* dynamicTree = world->broadPhase.trees + b3_dynamicBody;
 	b3Body* fastBody = b3Array_Get( world->bodies, fastBodySim->bodyId );
 
 	b3ContinuousContext context = { 0 };
@@ -538,7 +535,7 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* 
 		}
 
 		b3AABB sweptBox = b3AABB_Union( box1, box2 );
-		// DBVH Integration: Query broadphase via b3BroadPhase_Query wrapper
+		// SDBVH Integration: Query broadphase via b3BroadPhase_Query wrapper
 		b3BroadPhase_Query( &world->broadPhase, b3_staticBody, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
 
 		if ( isBullet )
@@ -2052,7 +2049,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		uint64_t refitTicks = b3GetTicks();
 
 		b3DynamicTree_Refit( world->broadPhase.trees + b3_kinematicBody );
-		b3DynamicTree_Refit( world->broadPhase.trees + b3_dynamicBody );
+		if ( !world->broadPhase.useSDBVH )
+		{
+			b3DynamicTree_Refit( world->broadPhase.trees + b3_dynamicBody );
+		}
 
 		b3ValidateBroadPhase( &world->broadPhase );
 
@@ -2073,7 +2073,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 
 		// Serially enlarge broad-phase proxies for bullet shapes
 		b3BroadPhase* broadPhase = &world->broadPhase;
-		b3DynamicTree* dynamicTree = broadPhase->trees + b3_dynamicBody;
 
 		// Fast array access is important here
 		b3Body* bodyArray = world->bodies.data;
@@ -2105,13 +2104,11 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				b3Shape* shape = shapeArray + shapeId;
 
 				int proxyKey = shape->proxyKey;
-				int proxyId = B3_PROXY_ID( proxyKey );
 				B3_VALIDATE( B3_PROXY_TYPE( proxyKey ) == b3_dynamicBody );
 
-				b3AABB treeAABB = b3DynamicTree_GetAABB( dynamicTree, proxyId );
 				b3AABB shapeFatAABB = world->fatAABBs.data[shapeId];
 
-				// DBVH Integration: Use b3BroadPhase_EnlargeProxy instead of direct b3DynamicTree_EnlargeProxy to support DBVH bullets
+				// SDBVH Integration: Use b3BroadPhase_EnlargeProxy instead of direct b3DynamicTree_EnlargeProxy to support SDBVH bullets
 				b3BroadPhase_EnlargeProxy( broadPhase, proxyKey, shapeFatAABB );
 
 				shapeId = shape->nextShapeId;

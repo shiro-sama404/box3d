@@ -3,6 +3,7 @@
 
 #include "broad_phase.h"
 
+#include "../sdbvh/sdbvh_c_api.h"
 #include "aabb.h"
 #include "arena_allocator.h"
 #include "body.h"
@@ -16,13 +17,13 @@
 #include "qsort.h"
 #include "shape.h"
 #include "simd.h"
-#include "../dbvh/dbvh_c_api.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
-void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useDBVH )
+
+void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useSDBVH )
 {
 	_Static_assert( b3_bodyTypeCount == 3, "must be three body types" );
 
@@ -37,60 +38,60 @@ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useD
 	int dynamicCapacity = b3MaxInt( 16, capacity->dynamicShapeCount );
 	bp->movedSiblings = NULL;
 
-	// DBVH Integration: Setup DBVH lifecycle and default configuration if enabled
-	bp->useDBVH = useDBVH;
-	bp->dbvhConfig.enableRebuild = true;
-	bp->dbvhConfig.enableFattening = true;
-	bp->dbvhConfig.enablePredictive = true;
-	bp->dbvhConfig.enableRotations = true;
-	bp->dbvhConfig.enableAdaptiveRebuild = true;
-	bp->dbvhConfig.degradationMetric = DBVH_METRIC_AREA_RATIO;
-	bp->dbvhConfig.rebuildThreshold = 1.80f;
-	bp->dbvhConfig.areaRatioThreshold = 1.80f;
-	bp->dbvhConfig.subtreeSAHThreshold = 1.80f;
-	bp->dbvhConfig.rebuildInterval = 30;
-	bp->dbvhConfig.maxRebuildsPerFrame = 2;
-	bp->dbvhConfig.maxSubtreeLeaves = 64;
+	// SDBVH Integration: Setup DBVH lifecycle and default configuration if enabled
+	bp->useSDBVH = useSDBVH;
+	bp->sdbvhConfig.enableRebuild = true;
+	bp->sdbvhConfig.enableFattening = false;
+	bp->sdbvhConfig.enablePredictive = false;
+	bp->sdbvhConfig.enableRotations = false;
+	bp->sdbvhConfig.enableAdaptiveRebuild = true;
+	bp->sdbvhConfig.degradationMetric = SDBVH_METRIC_AREA_RATIO;
+	bp->sdbvhConfig.areaRatioThreshold = 1.80f;
+	bp->sdbvhConfig.subtreeSAHThreshold = 1.80f;
+	bp->sdbvhConfig.rebuildInterval = 30;
+	bp->sdbvhConfig.maxRebuildsPerFrame = 2;
+	bp->sdbvhConfig.maxSubtreeLeaves = 1024;
+	bp->sdbvhConfig.partitionAlgorithm = SDBVH_PARTITION_BINNED_SAH;
 
-	bp->currentRebuildInterval = bp->dbvhConfig.rebuildInterval;
-	bp->currentMaxRebuilds = bp->dbvhConfig.maxRebuildsPerFrame;
+	bp->currentRebuildInterval = bp->sdbvhConfig.rebuildInterval;
+	bp->currentMaxRebuilds = bp->sdbvhConfig.maxRebuildsPerFrame;
 	bp->adaptiveCooldownCounter = 0;
+	bp->dynamicMoved = true;
 
-	if ( useDBVH )
+	if ( useSDBVH )
 	{
 		bp->trees[b3_dynamicBody] = (b3DynamicTree){ 0 };
-		bp->dbvhTree = dbvh_create( dynamicCapacity );
-		dbvh_set_config( bp->dbvhTree, &bp->dbvhConfig );
+		bp->sdbvhTree = sdbvh_create( dynamicCapacity );
+		sdbvh_set_config( bp->sdbvhTree, &bp->sdbvhConfig );
 	}
 	else
 	{
 		bp->trees[b3_dynamicBody] = b3DynamicTree_Create( dynamicCapacity );
-		bp->dbvhTree = NULL;
+		bp->sdbvhTree = NULL;
 	}
-
 }
 
-// DBVH Integration: Update DBVH runtime parameters
-void b3BroadPhase_SetConfig( b3BroadPhase* bp, const dbvh_config_t* config )
+// SDBVH Integration: Update DBVH runtime parameters
+void b3BroadPhase_SetConfig( b3BroadPhase* bp, const sdbvh_config_t* config )
 {
 	if ( config != NULL )
 	{
-		bp->dbvhConfig = *config;
+		bp->sdbvhConfig = *config;
 		bp->currentRebuildInterval = config->rebuildInterval;
 		bp->currentMaxRebuilds = config->maxRebuildsPerFrame;
 		bp->adaptiveCooldownCounter = 0;
-		if ( bp->useDBVH && bp->dbvhTree != NULL )
+		if ( bp->useSDBVH && bp->sdbvhTree != NULL )
 		{
-			dbvh_set_config( bp->dbvhTree, config );
+			sdbvh_set_config( bp->sdbvhTree, config );
 		}
 	}
 }
 
 void b3BroadPhase_Rebuild( b3BroadPhase* bp )
 {
-	if ( bp->useDBVH && bp->dbvhTree != NULL )
+	if ( bp->useSDBVH && bp->sdbvhTree != NULL )
 	{
-		dbvh_rebuild( bp->dbvhTree );
+		sdbvh_rebuild( bp->sdbvhTree );
 	}
 }
 
@@ -102,12 +103,11 @@ void b3DestroyBroadPhase( b3BroadPhase* bp )
 	}
 
 	b3DestroySet( &bp->pairSet );
-	// DBVH Integration: Cleanup DBVH C++ instance
-	if ( bp->useDBVH )
+	// SDBVH Integration: Cleanup DBVH C++ instance
+	if ( bp->useSDBVH )
 	{
-		dbvh_destroy( bp->dbvhTree );
+		sdbvh_destroy( bp->sdbvhTree );
 	}
-
 
 	memset( bp, 0, sizeof( b3BroadPhase ) );
 }
@@ -117,10 +117,12 @@ int b3BroadPhase_CreateProxy( b3BroadPhase* bp, b3BodyType proxyType, b3AABB aab
 {
 	B3_ASSERT( 0 <= proxyType && proxyType < b3_bodyTypeCount );
 	int proxyId;
-	if ( bp->useDBVH && proxyType == b3_dynamicBody )
+	if ( bp->useSDBVH && proxyType == b3_dynamicBody )
 	{
-		float aabbArray[6] = { aabb.lowerBound.x, aabb.lowerBound.y, aabb.lowerBound.z, aabb.upperBound.x, aabb.upperBound.y, aabb.upperBound.z };
-		proxyId = dbvh_insert_with_category( bp->dbvhTree, aabbArray, shapeIndex, categoryBits );
+		bp->dynamicMoved = true;
+		float aabbArray[6] = { aabb.lowerBound.x, aabb.lowerBound.y, aabb.lowerBound.z,
+							   aabb.upperBound.x, aabb.upperBound.y, aabb.upperBound.z };
+		proxyId = sdbvh_insert_with_category( bp->sdbvhTree, aabbArray, shapeIndex, categoryBits );
 	}
 	else
 	{
@@ -137,10 +139,11 @@ void b3BroadPhase_DestroyProxy( b3BroadPhase* bp, int proxyKey )
 	int proxyId = B3_PROXY_ID( proxyKey );
 
 	B3_ASSERT( 0 <= proxyType && proxyType < b3_bodyTypeCount );
-	// DBVH Integration: Remove proxy from DBVH
-	if ( bp->useDBVH && proxyType == b3_dynamicBody )
+	// SDBVH Integration: Remove proxy from DBVH
+	if ( bp->useSDBVH && proxyType == b3_dynamicBody )
 	{
-		dbvh_remove( bp->dbvhTree, proxyId );
+		bp->dynamicMoved = true;
+		sdbvh_remove( bp->sdbvhTree, proxyId );
 	}
 	else
 	{
@@ -153,9 +156,10 @@ void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb, b3Vec3
 	b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 	int proxyId = B3_PROXY_ID( proxyKey );
 
-	if ( bp->useDBVH && proxyType == b3_dynamicBody )
+	if ( bp->useSDBVH && proxyType == b3_dynamicBody )
 	{
-		int newId = dbvh_move( bp->dbvhTree, proxyId, (const float*)&aabb, (const float*)&velocity, 0.01f );
+		bp->dynamicMoved = true;
+		int newId = sdbvh_move( bp->sdbvhTree, proxyId, (const float*)&aabb, (const float*)&velocity, 0.0f );
 		B3_ASSERT( newId == proxyId );
 	}
 	else
@@ -165,15 +169,16 @@ void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb, b3Vec3
 	}
 }
 
-// DBVH Integration: Enlarge/update proxy in DBVH or DynamicTree
+// SDBVH Integration: Enlarge/update proxy in DBVH or DynamicTree
 void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
 {
 	b3BodyType typeIndex = B3_PROXY_TYPE( proxyKey );
 	int proxyId = B3_PROXY_ID( proxyKey );
 
-	if ( bp->useDBVH && typeIndex == b3_dynamicBody )
+	if ( bp->useSDBVH && typeIndex == b3_dynamicBody )
 	{
-		dbvh_enlarge_proxy( bp->dbvhTree, proxyId, (const float*)&aabb );
+		bp->dynamicMoved = true;
+		sdbvh_enlarge_proxy( bp->sdbvhTree, proxyId, (const float*)&aabb );
 	}
 	else
 	{
@@ -186,33 +191,38 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
 	}
 }
 
-// DBVH Integration: Trampoline callbacks adapting C++ DBVH query/raycast signatures to Box3D C callbacks
-typedef struct b3DBVHTrampolineContext {
+// SDBVH Integration: Trampoline callbacks adapting C++ DBVH query/raycast signatures to Box3D C callbacks
+typedef struct b3SDBVHTrampolineContext
+{
 	b3TreeQueryCallbackFcn* queryCallback;
 	b3TreeRayCastCallbackFcn* rayCastCallback;
 	const b3RayCastInput* rayInput;
 	void* userContext;
-} b3DBVHTrampolineContext;
+} b3SDBVHTrampolineContext;
 
-static bool b3DBVHQueryTrampoline(int32_t leafIndex, int32_t userData, void* context) {
-	b3DBVHTrampolineContext* ctx = (b3DBVHTrampolineContext*)context;
-	return ctx->queryCallback((int)leafIndex, (uint64_t)userData, ctx->userContext);
-}
-
-static float b3DBVHRayCastTrampoline(int32_t leafIndex, int32_t userData, void* context) {
-	b3DBVHTrampolineContext* ctx = (b3DBVHTrampolineContext*)context;
-	return ctx->rayCastCallback(ctx->rayInput, (int)leafIndex, (uint64_t)userData, ctx->userContext);
-}
-
-// DBVH Integration: Route AABB queries to DBVH when targeting dynamic body tree
-b3TreeStats b3BroadPhase_Query( const b3BroadPhase* bp, b3BodyType type, b3AABB aabb, uint64_t maskBits, bool requireAllBits, b3TreeQueryCallbackFcn* callback, void* context )
+static bool b3SDBVHQueryTrampoline( int32_t leafIndex, int32_t userData, void* context )
 {
-	if ( bp->useDBVH && type == b3_dynamicBody )
+	b3SDBVHTrampolineContext* ctx = (b3SDBVHTrampolineContext*)context;
+	return ctx->queryCallback( (int)leafIndex, (uint64_t)userData, ctx->userContext );
+}
+
+static float b3SDBVHRayCastTrampoline( int32_t leafIndex, int32_t userData, void* context )
+{
+	b3SDBVHTrampolineContext* ctx = (b3SDBVHTrampolineContext*)context;
+	return ctx->rayCastCallback( ctx->rayInput, (int)leafIndex, (uint64_t)userData, ctx->userContext );
+}
+
+// SDBVH Integration: Route AABB queries to DBVH when targeting dynamic body tree
+b3TreeStats b3BroadPhase_Query( const b3BroadPhase* bp, b3BodyType type, b3AABB aabb, uint64_t maskBits, bool requireAllBits,
+								b3TreeQueryCallbackFcn* callback, void* context )
+{
+	if ( bp->useSDBVH && type == b3_dynamicBody )
 	{
-		b3DBVHTrampolineContext trampCtx = { callback, NULL, NULL, context };
-		float aabbArray[6] = { aabb.lowerBound.x, aabb.lowerBound.y, aabb.lowerBound.z, aabb.upperBound.x, aabb.upperBound.y, aabb.upperBound.z };
-		dbvh_query_aabb( bp->dbvhTree, aabbArray, b3DBVHQueryTrampoline, &trampCtx );
-		b3TreeStats stats = {0};
+		b3SDBVHTrampolineContext trampCtx = { callback, NULL, NULL, context };
+		float aabbArray[6] = { aabb.lowerBound.x, aabb.lowerBound.y, aabb.lowerBound.z,
+							   aabb.upperBound.x, aabb.upperBound.y, aabb.upperBound.z };
+		sdbvh_query_aabb( bp->sdbvhTree, aabbArray, b3SDBVHQueryTrampoline, &trampCtx );
+		b3TreeStats stats = { 0 };
 		return stats;
 	}
 	else
@@ -221,16 +231,17 @@ b3TreeStats b3BroadPhase_Query( const b3BroadPhase* bp, b3BodyType type, b3AABB 
 	}
 }
 
-// DBVH Integration: Route raycasts to DBVH when targeting dynamic body tree
-b3TreeStats b3BroadPhase_RayCast( const b3BroadPhase* bp, b3BodyType type, const b3RayCastInput* input, uint64_t maskBits, bool requireAllBits, b3TreeRayCastCallbackFcn* callback, void* context )
+// SDBVH Integration: Route raycasts to DBVH when targeting dynamic body tree
+b3TreeStats b3BroadPhase_RayCast( const b3BroadPhase* bp, b3BodyType type, const b3RayCastInput* input, uint64_t maskBits,
+								  bool requireAllBits, b3TreeRayCastCallbackFcn* callback, void* context )
 {
-	if ( bp->useDBVH && type == b3_dynamicBody )
+	if ( bp->useSDBVH && type == b3_dynamicBody )
 	{
-		b3DBVHTrampolineContext trampCtx = { NULL, callback, input, context };
+		b3SDBVHTrampolineContext trampCtx = { NULL, callback, input, context };
 		float originArray[3] = { input->origin.x, input->origin.y, input->origin.z };
 		float translationArray[3] = { input->translation.x, input->translation.y, input->translation.z };
-		dbvh_ray_cast( bp->dbvhTree, originArray, translationArray, input->maxFraction, b3DBVHRayCastTrampoline, &trampCtx );
-		b3TreeStats stats = {0};
+		sdbvh_ray_cast( bp->sdbvhTree, originArray, translationArray, input->maxFraction, b3SDBVHRayCastTrampoline, &trampCtx );
+		b3TreeStats stats = { 0 };
 		return stats;
 	}
 	else
@@ -387,8 +398,7 @@ static void b3EmitCompoundPairs( b3PairContext* context, int compoundShapeId, in
 
 	int otherProxyKey = otherShape->proxyKey;
 	B3_ASSERT( otherProxyKey != B3_NULL_INDEX );
-	b3AABB otherAABB =
-		b3DynamicTree_GetAABB( world->broadPhase.trees + B3_PROXY_TYPE( otherProxyKey ), B3_PROXY_ID( otherProxyKey ) );
+	b3AABB otherAABB = b3BroadPhase_GetProxyAABB( &world->broadPhase, otherProxyKey );
 
 	// Query bounds are float world space, so the demoted transform is the matching float frame
 	b3Transform compoundTransform = b3ToRelativeTransform( b3GetBodyTransform( world, compoundShape->bodyId ), b3Pos_zero );
@@ -501,6 +511,11 @@ static void b3FlushCandidatePairs( b3PairContext* context )
 
 B3_FORCE_INLINE void b3AddCandidatePair( int shapeIdA, int shapeIdB, b3PairContext* context )
 {
+	if ( shapeIdA == shapeIdB )
+	{
+		return;
+	}
+
 	// Follow shape index order.
 	b3CandidatePair* candidate = context->batch + context->batchCount;
 	candidate->shapeIdA = b3MinInt( shapeIdA, shapeIdB );
@@ -782,24 +797,24 @@ static void b3UpdateTreesTask( void* context )
 	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
 
 	b3World* world = (b3World*)context;
-	// DBVH Integration: Trigger periodic degradation-based rebuild every N frames with amortized budget
-	if ( world->broadPhase.useDBVH )
+	// SDBVH Integration: Trigger periodic degradation-based rebuild every N frames with amortized budget
+	if ( world->broadPhase.useSDBVH )
 	{
 		b3BroadPhase* bp = &world->broadPhase;
-		if ( bp->dbvhConfig.enableRebuild )
+		if ( bp->sdbvhConfig.enableRebuild )
 		{
-			int interval = bp->dbvhConfig.enableAdaptiveRebuild ? bp->currentRebuildInterval : bp->dbvhConfig.rebuildInterval;
+			int interval = bp->sdbvhConfig.enableAdaptiveRebuild ? bp->currentRebuildInterval : bp->sdbvhConfig.rebuildInterval;
 			if ( interval <= 1 || ( world->stepIndex % (uint64_t)interval ) == 0 )
 			{
 				int maxRebuilds = 2;
-				int maxLeaves = bp->dbvhConfig.maxSubtreeLeaves > 0 ? bp->dbvhConfig.maxSubtreeLeaves : 64;
-				int rebuiltCount = dbvh_rebuild_degraded_adaptive( bp->dbvhTree,
-				                                                   bp->dbvhConfig.rebuildThreshold,
-				                                                   bp->dbvhConfig.degradationMetric,
-				                                                   maxRebuilds,
-				                                                   maxLeaves );
+				int maxLeaves = bp->sdbvhConfig.maxSubtreeLeaves > 0 ? bp->sdbvhConfig.maxSubtreeLeaves : 64;
+				float threshold = ( bp->sdbvhConfig.degradationMetric == SDBVH_METRIC_AREA_RATIO )
+									  ? bp->sdbvhConfig.areaRatioThreshold
+									  : bp->sdbvhConfig.subtreeSAHThreshold;
+				int rebuiltCount = sdbvh_rebuild_degraded_adaptive( bp->sdbvhTree, threshold, bp->sdbvhConfig.degradationMetric,
+																	maxRebuilds, maxLeaves );
 
-				if ( bp->dbvhConfig.enableAdaptiveRebuild )
+				if ( bp->sdbvhConfig.enableAdaptiveRebuild )
 				{
 					bp->currentMaxRebuilds = 2;
 					if ( rebuiltCount < 2 )
@@ -809,7 +824,8 @@ static void b3UpdateTreesTask( void* context )
 					}
 					else
 					{
-						bp->currentRebuildInterval = ( bp->dbvhConfig.rebuildInterval > 0 ) ? bp->dbvhConfig.rebuildInterval : 30;
+						bp->currentRebuildInterval =
+							( bp->sdbvhConfig.rebuildInterval > 0 ) ? bp->sdbvhConfig.rebuildInterval : 30;
 					}
 				}
 			}
@@ -841,13 +857,86 @@ static void b3EnqueueTreeUpdate( b3World* world )
 	}
 }
 
+typedef struct b3SDBVHCrossContext
+{
+	b3World* world;
+	b3PairContext* pairContext;
+	int otherShapeId;
+} b3SDBVHCrossContext;
+
+static bool b3SDBVHCrossQueryCallback( int32_t leafIndex, int32_t userData, void* context )
+{
+	B3_UNUSED( leafIndex );
+	b3SDBVHCrossContext* ctx = (b3SDBVHCrossContext*)context;
+	int dynamicShapeId = userData;
+	if ( dynamicShapeId == ctx->otherShapeId )
+	{
+		return true;
+	}
+	b3AddCandidatePair( dynamicShapeId, ctx->otherShapeId, ctx->pairContext );
+	return true;
+}
+
+static void b3SDBVHSelfPairsCallback( int32_t shapeIdA, int32_t shapeIdB, void* context )
+{
+	if ( shapeIdA == shapeIdB )
+	{
+		return;
+	}
+	b3PairContext* pairContext = (b3PairContext*)context;
+	b3AddCandidatePair( shapeIdA, shapeIdB, pairContext );
+}
+
+static void b3SDBVHSelfPairsBatchCallback( const sdbvh_pair_t* pairs, int count, void* context )
+{
+	b3PairContext* pairContext = (b3PairContext*)context;
+	for ( int i = 0; i < count; ++i )
+	{
+		pairContext->batch[pairContext->batchCount++] = (b3CandidatePair){ pairs[i].shapeIdA, pairs[i].shapeIdB };
+		if ( pairContext->batchCount == B3_CANDIDATE_BATCH )
+		{
+			b3FlushCandidatePairs( pairContext );
+		}
+	}
+}
+
+typedef struct b3SDBVHTaskContext
+{
+	b3World* world;
+	sdbvh_tree_t* tree;
+	const sdbvh_seed_t* seeds;
+} b3SDBVHTaskContext;
+
+static void b3SDBVHSelfPairsTask( int startIndex, int endIndex, int workerIndex, void* context )
+{
+	b3TracyCZoneNC( sdbvh_self_pairs, "SDBVH Self", b3_colorCoral, true );
+
+	b3SDBVHTaskContext* taskCtx = (b3SDBVHTaskContext*)context;
+	b3World* world = taskCtx->world;
+
+	b3PairContext pairContext = {
+		.world = world,
+		.pairKeys = &world->taskContexts.data[workerIndex].pairKeys,
+		.checkCompounds = world->compoundShapeCount > 0,
+	};
+
+	for ( int i = startIndex; i < endIndex; ++i )
+	{
+		sdbvh_query_seed_batched( taskCtx->tree, &taskCtx->seeds[i], b3SDBVHSelfPairsBatchCallback, &pairContext );
+	}
+
+	b3FlushCandidatePairs( &pairContext );
+
+	b3TracyCZoneEnd( sdbvh_self_pairs );
+}
+
 void b3UpdateBroadPhasePairs( b3World* world )
 {
 	b3BroadPhase* bp = &world->broadPhase;
 
 	bool needUpdate = b3HasTreeMoved( bp->trees + b3_staticBody );
 	needUpdate = needUpdate || b3NeedsRebuild( bp->trees + b3_kinematicBody );
-	needUpdate = needUpdate || b3NeedsRebuild( bp->trees + b3_dynamicBody );
+	needUpdate = needUpdate || ( bp->useSDBVH ? bp->dynamicMoved : b3NeedsRebuild( bp->trees + b3_dynamicBody ) );
 
 	if ( needUpdate == false )
 	{
@@ -863,8 +952,76 @@ void b3UpdateBroadPhasePairs( b3World* world )
 		b3Array_Clear( world->taskContexts.data[i].pairKeys );
 	}
 
-	// Generate pairs by querying the dynamic body tree against itself and against
-	// the kinematic and static trees.
+	if ( bp->useSDBVH )
+	{
+		b3PairContext pairContext = {
+			.world = world,
+			.pairKeys = &world->taskContexts.data[0].pairKeys,
+			.checkCompounds = world->compoundShapeCount > 0,
+		};
+
+		// Static and Kinematic shapes against DBVH
+		int shapeCount = world->shapes.count;
+		for ( int i = 0; i < shapeCount; ++i )
+		{
+			b3Shape* shape = b3Array_Get( world->shapes, i );
+			if ( shape->id == B3_NULL_INDEX )
+			{
+				continue;
+			}
+			b3BodyType proxyType = (b3BodyType)B3_PROXY_TYPE( shape->proxyKey );
+			if ( proxyType == b3_staticBody )
+			{
+				float aabbArr[6] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z,
+									 shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
+				b3SDBVHCrossContext crossCtx = {
+					.world = world,
+					.pairContext = &pairContext,
+					.otherShapeId = shape->id,
+				};
+				sdbvh_query_aabb_mask_moved( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback,
+											 &crossCtx );
+			}
+			else if ( proxyType == b3_kinematicBody )
+			{
+				float aabbArr[6] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z,
+									 shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
+				b3SDBVHCrossContext crossCtx = {
+					.world = world,
+					.pairContext = &pairContext,
+					.otherShapeId = shape->id,
+				};
+				sdbvh_query_aabb_mask( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback, &crossCtx );
+			}
+		}
+
+		b3FlushCandidatePairs( &pairContext );
+
+		// Self-pairs with moved-node pruning (Batched & Task-parallelized)
+		if ( world->workerCount > 1 )
+		{
+			sdbvh_seed_t seeds[64];
+			int seedCount = sdbvh_gather_seeds( bp->sdbvhTree, seeds, 64 );
+			if ( seedCount > 0 )
+			{
+				b3SDBVHTaskContext taskCtx = {
+					.world = world,
+					.tree = bp->sdbvhTree,
+					.seeds = seeds,
+				};
+				b3ParallelFor( world, &b3SDBVHSelfPairsTask, seedCount, 1, &taskCtx, "sdbvh self pairs" );
+			}
+		}
+		else
+		{
+			sdbvh_query_pairs_batched( bp->sdbvhTree, b3SDBVHSelfPairsBatchCallback, &pairContext );
+			b3FlushCandidatePairs( &pairContext );
+		}
+
+		sdbvh_clear_moved( bp->sdbvhTree );
+		bp->dynamicMoved = false;
+	}
+	else
 	{
 		// Get the sibling pairs of the dynamic body tree that have moved.
 		const b3DynamicTree* dynamicTree = bp->trees + b3_dynamicBody;
@@ -950,7 +1107,10 @@ void b3UpdateBroadPhasePairs( b3World* world )
 		// real bug. Trap it in a validation build, and skip rather than double add to the pair
 		// set, which a later destroy would then remove once.
 		bool duplicate = i > 0 && key == pairKeys[i - 1];
-		B3_VALIDATE( duplicate == false );
+		if ( !bp->useSDBVH )
+		{
+			B3_VALIDATE( duplicate == false );
+		}
 		if ( duplicate )
 		{
 			continue;
@@ -968,49 +1128,41 @@ void b3UpdateBroadPhasePairs( b3World* world )
 
 	b3StackFree( alloc, pairKeys );
 
-	b3StackFree( alloc, bp->movedSiblings );
-	bp->movedSiblings = NULL;
+	if ( bp->movedSiblings != NULL )
+	{
+		b3StackFree( alloc, bp->movedSiblings );
+		bp->movedSiblings = NULL;
+	}
 
 	b3ValidateSolverSets( world );
 
 	b3TracyCZoneEnd( create_contacts );
 }
 
+b3AABB b3BroadPhase_GetProxyAABB( const b3BroadPhase* bp, int proxyKey )
+{
+	int typeIndex = B3_PROXY_TYPE( proxyKey );
+	int proxyId = B3_PROXY_ID( proxyKey );
+
+	if ( bp->useSDBVH && typeIndex == b3_dynamicBody )
+	{
+		float arr[6];
+		sdbvh_get_aabb( bp->sdbvhTree, proxyId, arr );
+		b3AABB aabb;
+		aabb.lowerBound = (b3Pos){ arr[0], arr[1], arr[2] };
+		aabb.upperBound = (b3Pos){ arr[3], arr[4], arr[5] };
+		return aabb;
+	}
+	else
+	{
+		return b3DynamicTree_GetAABB( bp->trees + typeIndex, proxyId );
+	}
+}
+
 bool b3BroadPhase_TestOverlap( const b3BroadPhase* bp, int proxyKeyA, int proxyKeyB )
 {
-	int typeIndexA = B3_PROXY_TYPE( proxyKeyA );
-	int proxyIdA = B3_PROXY_ID( proxyKeyA );
-	int typeIndexB = B3_PROXY_TYPE( proxyKeyB );
-	int proxyIdB = B3_PROXY_ID( proxyKeyB );
-
-	b3AABB aabbA;
-	// DBVH Integration: Get proxy AABB from DBVH for dynamic body
-	if ( bp->useDBVH && typeIndexA == b3_dynamicBody )
-	{
-		float arr[6];
-		dbvh_get_aabb( bp->dbvhTree, proxyIdA, arr );
-		aabbA.lowerBound = (b3Pos){ arr[0], arr[1], arr[2] };
-		aabbA.upperBound = (b3Pos){ arr[3], arr[4], arr[5] };
-	}
-	else
-	{
-		aabbA = b3DynamicTree_GetAABB( bp->trees + typeIndexA, proxyIdA );
-	}
-
-	b3AABB aabbB;
-	// DBVH Integration: Get proxy AABB from DBVH for dynamic body
-	if ( bp->useDBVH && typeIndexB == b3_dynamicBody )
-	{
-		float arr[6];
-		dbvh_get_aabb( bp->dbvhTree, proxyIdB, arr );
-		aabbB.lowerBound = (b3Pos){ arr[0], arr[1], arr[2] };
-		aabbB.upperBound = (b3Pos){ arr[3], arr[4], arr[5] };
-	}
-	else
-	{
-		aabbB = b3DynamicTree_GetAABB( bp->trees + typeIndexB, proxyIdB );
-	}
-
+	b3AABB aabbA = b3BroadPhase_GetProxyAABB( bp, proxyKeyA );
+	b3AABB aabbB = b3BroadPhase_GetProxyAABB( bp, proxyKeyB );
 	return b3AABB_Overlaps( aabbA, aabbB );
 }
 
@@ -1019,10 +1171,10 @@ int b3BroadPhase_GetShapeIndex( b3BroadPhase* bp, int proxyKey )
 	int typeIndex = B3_PROXY_TYPE( proxyKey );
 	int proxyId = B3_PROXY_ID( proxyKey );
 
-	// DBVH Integration: Get user data (shapeIndex) from DBVH for dynamic body
-	if ( bp->useDBVH && typeIndex == b3_dynamicBody )
+	// SDBVH Integration: Get user data (shapeIndex) from DBVH for dynamic body
+	if ( bp->useSDBVH && typeIndex == b3_dynamicBody )
 	{
-		return (int)dbvh_get_user_data( bp->dbvhTree, proxyId );
+		return (int)sdbvh_get_user_data( bp->sdbvhTree, proxyId );
 	}
 	else
 	{
@@ -1032,8 +1184,8 @@ int b3BroadPhase_GetShapeIndex( b3BroadPhase* bp, int proxyKey )
 
 void b3ValidateBroadPhase( const b3BroadPhase* bp )
 {
-	// DBVH Integration: Validate native dynamic tree only when not using DBVH
-	if ( !bp->useDBVH )
+	// SDBVH Integration: Validate native dynamic tree only when not using DBVH
+	if ( !bp->useSDBVH )
 	{
 		b3DynamicTree_Validate( bp->trees + b3_dynamicBody );
 	}
@@ -1047,8 +1199,8 @@ void b3ValidateNoMoved( const b3BroadPhase* bp )
 #if B3_ENABLE_VALIDATION == 1
 	for ( int j = 0; j < b3_bodyTypeCount; ++j )
 	{
-		// DBVH Integration: Skip native dynamic tree validation when using DBVH
-		if ( bp->useDBVH && j == b3_dynamicBody )
+		// SDBVH Integration: Skip native dynamic tree validation when using DBVH
+		if ( bp->useSDBVH && j == b3_dynamicBody )
 		{
 			continue;
 		}
@@ -1060,8 +1212,9 @@ void b3ValidateNoMoved( const b3BroadPhase* bp )
 #endif
 }
 
-// DBVH Integration: Compute broadphase quality metrics and ground truth ideal comparison
-void b3BroadPhase_GetQualityMetrics( const b3BroadPhase* bp, b3BodyType bodyType, bool computeIdeal, float traversalCost, float isectCost, b3BroadPhaseQualityMetrics* outMetrics )
+// SDBVH Integration: Compute broadphase quality metrics and ground truth ideal comparison
+void b3BroadPhase_GetQualityMetrics( const b3BroadPhase* bp, b3BodyType bodyType, bool computeIdeal, float traversalCost,
+									 float isectCost, b3BroadPhaseQualityMetrics* outMetrics )
 {
 	if ( bp == NULL || outMetrics == NULL )
 	{
@@ -1070,10 +1223,10 @@ void b3BroadPhase_GetQualityMetrics( const b3BroadPhase* bp, b3BodyType bodyType
 
 	memset( outMetrics, 0, sizeof( *outMetrics ) );
 
-	if ( bp->useDBVH && bodyType == b3_dynamicBody )
+	if ( bp->useSDBVH && bodyType == b3_dynamicBody )
 	{
-		dbvh_tree_metrics_t curMetrics;
-		dbvh_get_quality_metrics( bp->dbvhTree, &curMetrics, traversalCost, isectCost );
+		sdbvh_tree_metrics_t curMetrics;
+		sdbvh_get_quality_metrics( bp->sdbvhTree, &curMetrics, traversalCost, isectCost );
 		outMetrics->current.sahCostStandard = curMetrics.sahCostStandard;
 		outMetrics->current.sahCostNormalized = curMetrics.sahCostNormalized;
 		outMetrics->current.rootArea = curMetrics.rootArea;
@@ -1083,8 +1236,8 @@ void b3BroadPhase_GetQualityMetrics( const b3BroadPhase* bp, b3BodyType bodyType
 
 		if ( computeIdeal )
 		{
-			dbvh_tree_metrics_t idealMetrics;
-			dbvh_get_ideal_quality_metrics( bp->dbvhTree, &idealMetrics, traversalCost, isectCost );
+			sdbvh_tree_metrics_t idealMetrics;
+			sdbvh_get_ideal_quality_metrics( bp->sdbvhTree, &idealMetrics, traversalCost, isectCost );
 			outMetrics->ideal.sahCostStandard = idealMetrics.sahCostStandard;
 			outMetrics->ideal.sahCostNormalized = idealMetrics.sahCostNormalized;
 			outMetrics->ideal.rootArea = idealMetrics.rootArea;
@@ -1114,8 +1267,8 @@ void b3BroadPhase_GetQualityMetrics( const b3BroadPhase* bp, b3BodyType bodyType
 			if ( aabbArray != NULL )
 			{
 				b3DynamicTree_GetLeafAABBs( tree, aabbArray, leafCount );
-				dbvh_tree_metrics_t idealMetrics;
-				dbvh_compute_ideal_from_aabbs( aabbArray, leafCount, &idealMetrics, traversalCost, isectCost );
+				sdbvh_tree_metrics_t idealMetrics;
+				sdbvh_compute_ideal_from_aabbs( aabbArray, leafCount, &idealMetrics, traversalCost, isectCost );
 				free( aabbArray );
 
 				outMetrics->ideal.sahCostStandard = idealMetrics.sahCostStandard;
