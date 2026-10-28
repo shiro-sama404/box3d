@@ -1,20 +1,22 @@
 /// @file DBVH.hpp
-/// Dynamic Bounding Volume Hierarchy (DBVH) para detecção de colisões
+/// Stable Dynamic Bounding Volume Hierarchy (SDBVH) para detecção de colisões
 
 #pragma once
 
-#include "Vec3.h"
-#include "AABB.h"
+#include "aabb.h"
+#include "vec3.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
-namespace dbvh
+namespace sdbvh
 {
 
 // ============================================================================
@@ -26,28 +28,41 @@ static constexpr int32_t NULL_NODE = -1;
 using NodeIndex = int32_t;
 using LeafPair = std::pair<size_t, size_t>;
 
+/// @brief Algoritmos de particionamento para rebuild.
+enum class PartitionAlgorithm : uint8_t
+{
+    BinnedSAH = 0,   // Surface Area Heuristic em bins (Wald 2007)
+    MedianSplit = 1, // Partição mediana dos centróides no maior eixo (Hoare)
+};
+
 /// @brief Métricas para avaliação de degradação da árvore.
 enum class DegradationMetric : uint8_t
 {
-    AreaRatio = 0,   // Métrica clássica: Área Atual / Área de Construção (threshold 1.5)
-    SubtreeSAH = 1,  // Métrica normalizada alpha_k: sum(SA_descendentes) / (SA_k * N_k * log2(N_k))
+    AreaRatio = 0,  // Área Atual / Área de Construção
+    // Removi dos testes. Considerar reformular/descartar no futuro.
+    SubtreeSAH = 1, // sum(SA_descendentes) / (SA_k * N_k * log2(N_k))
 };
 
-/// @brief Configurações de execução e manutenção da DBVH.
-struct DBVHConfig
+/// @brief Configurações de execução e manutenção da SDBVH.
+struct SDBVHConfig
 {
     bool enableRebuild{true};
-    bool enableFattening{true};
+    bool enableFattening{false};
     bool enablePredictive{false};
     bool enableRotations{false};
     DegradationMetric metric{DegradationMetric::AreaRatio};
+    PartitionAlgorithm partitionAlgorithm{PartitionAlgorithm::BinnedSAH};
     float areaRatioThreshold{1.8f};
     float subtreeSAHThreshold{1.8f};
-    float rebuildThreshold{1.8f}; // Compatibilidade
     int32_t rebuildInterval{30};
     int32_t maxRebuildsPerFrame{2};
     bool enableAdaptiveRebuild{true};
     int32_t maxSubtreeLeaves{64};
+
+    [[nodiscard]] float getActiveThreshold() const noexcept
+    {
+        return (metric == DegradationMetric::AreaRatio) ? areaRatioThreshold : subtreeSAHThreshold;
+    }
 };
 
 /// @brief Métricas e custo SAH da árvore para avaliação de qualidade e benchmarks.
@@ -62,46 +77,36 @@ struct TreeQualityMetrics
 };
 
 /// @brief Pilha pré-alocada para travessias iterativas.
-/// Elimina alocações heap em hot-paths e maximiza localidade de cache L1.
 /// @tparam T Tipo do elemento.
 /// @tparam N Capacidade máxima.
 template <typename T, size_t N>
 struct FixedStack
 {
     std::array<T, N> data;
-    std::vector<T> overflow;
     size_t top{0};
 
-    void push(const T& val)
+    void push(const T& val) noexcept
     {
-        if (top < N)
-            data[top] = val;
-        else
-            overflow.push_back(val);
-        top++;
+        assert(top < N && "FixedStack overflow");
+        data[top++] = val;
     }
 
     T pop() noexcept
     {
         assert(top > 0 && "FixedStack underflow");
-        top--;
-        if (top < N)
-            return data[top];
-        else
-        {
-            T val = overflow.back();
-            overflow.pop_back();
-            return val;
-        }
+        return data[--top];
     }
 
     [[nodiscard]] T& peek() noexcept
     {
         assert(top > 0 && "FixedStack peek on empty");
-        if (top - 1 < N)
-            return data[top - 1];
-        else
-            return overflow.back();
+        return data[top - 1];
+    }
+
+    [[nodiscard]] const T& peek() const noexcept
+    {
+        assert(top > 0 && "FixedStack peek on empty");
+        return data[top - 1];
     }
 
     [[nodiscard]] bool empty() const noexcept { return top == 0; }
@@ -121,10 +126,10 @@ struct DefaultBVHTraits
     [[nodiscard]] static constexpr float surfaceArea(const AABBType& a) noexcept
     { return a.surfaceArea(); }
 
-    [[nodiscard]] static constexpr bool overlaps(const AABBType& a, const AABBType& b) noexcept
+    [[nodiscard]] static bool overlaps(const AABBType& a, const AABBType& b) noexcept
     { return a.overlaps(b); }
 
-    [[nodiscard]] static constexpr bool contains(const AABBType& a, const AABBType& b) noexcept
+    [[nodiscard]] static bool contains(const AABBType& a, const AABBType& b) noexcept
     { return a.contains(b); }
 
     [[nodiscard]] static constexpr AABBType unite(const AABBType& a, const AABBType& b) noexcept
@@ -181,43 +186,48 @@ struct alignas(64) Node
     T userData{};                                            //  4 bytes (apenas folhas)
     uint64_t categoryBits{0xFFFFFFFFFFFFFFFFull};            //  8 bytes (filtro de colisão)
     float constructionArea{0.0f};                            //  4 bytes
-    float subtreeArea{0.0f};                                 //  4 bytes (Soma de SA de toda a subárvore)
     uint32_t leafCount{1};                                   //  4 bytes (Quantidade de folhas)
     uint16_t flags{0};                                       //  2 bytes
-    uint16_t pad{0};                                         //  2 bytes
+    uint8_t  pad[6]{0};                                      //  6 bytes
+
+    static constexpr uint16_t NODE_FLAG_MOVED    = 0x01;
+    static constexpr uint16_t NODE_FLAG_ENLARGED = 0x02;
 
     [[nodiscard]] bool isLeaf() const noexcept { return child[0] == NULL_NODE; }
-    [[nodiscard]] bool isEnlarged() const noexcept { return (flags & 0x02) != 0; }
+    [[nodiscard]] bool isMoved() const noexcept { return (flags & NODE_FLAG_MOVED) != 0; }
+    [[nodiscard]] bool isEnlarged() const noexcept { return (flags & NODE_FLAG_ENLARGED) != 0; }
 
-    void setEnlarged() noexcept { flags |= 0x02; }
-    void clearEnlarged() noexcept { flags &= static_cast<uint16_t>(~0x02); }
+    void setMoved() noexcept { flags |= NODE_FLAG_MOVED; }
+    void clearMoved() noexcept { flags &= static_cast<uint16_t>(~NODE_FLAG_MOVED); }
+    void setEnlarged() noexcept { flags |= NODE_FLAG_ENLARGED; }
+    void clearEnlarged() noexcept { flags &= static_cast<uint16_t>(~NODE_FLAG_ENLARGED); }
 };
 
 // ============================================================================
-// DBVH – Dynamic Bounding Volume Hierarchy
+// SDBVH – Stable Dynamic Bounding Volume Hierarchy
 // ============================================================================
 
 /// @brief Estrutura dinâmica de hierarquia de volumes envolventes.
 /// @tparam T Tipo do dado armazenado nas folhas.
 /// @tparam Traits Struct de traits que define tipos geométricos e operações.
 template <typename T, typename Traits = DefaultBVHTraits>
-class DBVH
+class SDBVH
 {
 public:
     using AABBType = typename Traits::AABBType;
     using VecType  = typename Traits::VecType;
     using NodeType = Node<T, AABBType>;
 
-    DBVH() = default;
-    explicit DBVH(size_t initialCapacity);
+    SDBVH() = default;
+    explicit SDBVH(size_t initialCapacity);
 
     // Desabilita cópia
-    DBVH(const DBVH&) = delete;
-    DBVH& operator=(const DBVH&) = delete;
-    DBVH(DBVH&&) = default;
-    DBVH& operator=(DBVH&&) = default;
+    SDBVH(const SDBVH&) = delete;
+    SDBVH& operator=(const SDBVH&) = delete;
+    SDBVH(SDBVH&&) = default;
+    SDBVH& operator=(SDBVH&&) = default;
 
-    // --- Operações principais ---
+    // --- Operações ---
 
     /// @brief Insere um novo objeto na árvore.
     /// @param leafAABB AABB do objeto
@@ -253,8 +263,15 @@ public:
     template <typename F>
     void query(const AABBType& queryAABB, F&& callback, uint64_t maskBits = 0xFFFFFFFFFFFFFFFFull) const;
 
-    /// @brief Consulta rápida repassada diretamente a callback C.
-    void queryFast(const AABBType& queryAABB, uint64_t maskBits, bool (*callback)(int32_t proxyId, uint64_t userData, void* context), void* context) const;
+    /// @brief Consulta folhas sobrepostas filtrando ramos com nós marcados como movidos.
+    template <typename F>
+    void queryMaskMoved(const AABBType& queryAABB, F&& callback, uint64_t maskBits = 0xFFFFFFFFFFFFFFFFull) const;
+
+    /// @brief Marca um nó folha e propaga a flag de movimento até a raiz.
+    void markProxyMoved(size_t leafIndex);
+
+    /// @brief Limpa as flags de movimento de todos os nós marcados na árvore.
+    void clearMoved();
 
     /// @brief Lança um raio contra a árvore.
     /// @param origin Ponto de origem do raio.
@@ -273,17 +290,12 @@ public:
     template <typename F>
     void queryPairs(F&& callback) const;
 
-    // --- Manutenção Global ---
-
-    /// @brief Atualiza todos os AABBs da árvore em uma única passagem pós-ordem.
-    /// Usado em BLASes deformáveis onde todas as folhas mudam simultaneamente.
-    /// @param computeAABB Função que recebe userData de uma folha e retorna seu AABB atualizado.
+    /// @brief consulta pares a partir de dois nós específicos (startA, startB).
     template <typename F>
-    void refitAll(F&& computeAABB);
+    void queryPairs(NodeIndex startA, NodeIndex startB, F&& callback) const;
 
-    /// @brief Limpa as flags `enlarged` de todos os nós alocados.
-    /// Deve ser chamado após cada ciclo de queryPairs.
-    void clearAllEnlarged();
+    /// @brief Gera até maxPairs pares de subárvores disjuntas para paralelismo em tasks.
+    int gatherSubtreePairs(NodeIndex* outA, NodeIndex* outB, int maxPairs) const;
 
     /// @brief Reconstrói uma subárvore (ou a árvore inteira) via SAH top-down binned.
     /// @param subtreeRoot Raiz da subárvore a reconstruir (NULL_NODE = árvore inteira).
@@ -298,21 +310,12 @@ public:
     /// @return Número de candidatos a ramos degradados identificados.
     int rebuildDegraded(float threshold, DegradationMetric metric, int maxRebuilds = 2, int maxSubtreeLeaves = 64);
 
-    /// @brief Executa rebuild degraded utilizando as configurações correntes da DBVH.
-    int rebuildDegraded()
-    {
-        if (config.enableRebuild)
-        {
-            float th = (config.metric == DegradationMetric::AreaRatio) ? config.areaRatioThreshold : config.subtreeSAHThreshold;
-            return rebuildDegraded(th, config.metric, config.maxRebuildsPerFrame, config.maxSubtreeLeaves);
-        }
-        return 0;
-    }
 
     // --- Configuração ---
-    void setConfig(const DBVHConfig& cfg) noexcept { config = cfg; }
-    [[nodiscard]] const DBVHConfig& getConfig() const noexcept { return config; }
-    [[nodiscard]] DBVHConfig& getConfig() noexcept { return config; }
+
+    void setConfig(const SDBVHConfig& cfg) noexcept { config = cfg; }
+    [[nodiscard]] const SDBVHConfig& getConfig() const noexcept { return config; }
+    [[nodiscard]] SDBVHConfig& getConfig() noexcept { return config; }
 
     // --- Acesso e Diagnóstico ---
 
@@ -329,6 +332,7 @@ public:
     [[nodiscard]] int getHeight() const;
 
     // --- Avaliação de Qualidade e Métricas SAH ---
+    
     [[nodiscard]] TreeQualityMetrics computeQualityMetrics(float traversalCost = 1.0f, float isectCost = 1.0f) const;
     [[nodiscard]] TreeQualityMetrics computeIdealQualityMetrics(float traversalCost = 1.0f, float isectCost = 1.0f) const;
     static TreeQualityMetrics computeIdealFromAABBs(const std::vector<AABBType>& leafAABBs, float traversalCost = 1.0f, float isectCost = 1.0f);
@@ -337,7 +341,7 @@ private:
     std::vector<NodeType> nodes;
     std::vector<size_t> freeList;
     NodeIndex root{NULL_NODE};
-    DBVHConfig config;
+    SDBVHConfig config;
     float totalTreeArea{0.0f};
     size_t leafCount{0};
 
@@ -371,13 +375,13 @@ private:
 // ============================================================================
 
 template <typename T, typename Traits>
-DBVH<T, Traits>::DBVH(size_t initialCapacity)
+SDBVH<T, Traits>::SDBVH(size_t initialCapacity)
 {
     nodes.reserve(initialCapacity);
 }
 
 template <typename T, typename Traits>
-size_t DBVH<T, Traits>::allocateNode()
+size_t SDBVH<T, Traits>::allocateNode()
 {
     if (!freeList.empty())
     {
@@ -391,13 +395,13 @@ size_t DBVH<T, Traits>::allocateNode()
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::freeNode(size_t idx)
+void SDBVH<T, Traits>::freeNode(size_t idx)
 {
     freeList.push_back(idx);
 }
 
 template <typename T, typename Traits>
-size_t DBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uint64_t categoryBits)
+size_t SDBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uint64_t categoryBits)
 {
     size_t leaf = allocateNode();
     nodes[leaf].aabb = leafAABB;
@@ -405,15 +409,15 @@ size_t DBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uint
     nodes[leaf].categoryBits = categoryBits;
     nodes[leaf].child = {NULL_NODE, NULL_NODE}; // Marca como folha
     nodes[leaf].leafCount = 1;
-    nodes[leaf].subtreeArea = Traits::surfaceArea(leafAABB);
-    nodes[leaf].constructionArea = nodes[leaf].subtreeArea;
-    totalTreeArea += nodes[leaf].subtreeArea;
+    nodes[leaf].constructionArea = Traits::surfaceArea(leafAABB);
+    totalTreeArea += nodes[leaf].constructionArea;
     leafCount++;
 
     if (root == NULL_NODE)
     {
         root = static_cast<NodeIndex>(leaf);
         nodes[leaf].parent = NULL_NODE;
+        markProxyMoved(leaf);
         return leaf;
     }
 
@@ -427,7 +431,6 @@ size_t DBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uint
     nodes[newParent].child = {bestSibling, static_cast<NodeIndex>(leaf)};
     nodes[newParent].categoryBits = nodes[bestSibling].categoryBits | categoryBits;
     nodes[newParent].leafCount = nodes[bestSibling].leafCount + 1;
-    nodes[newParent].subtreeArea = nodes[newParent].constructionArea + nodes[bestSibling].subtreeArea + nodes[leaf].subtreeArea;
     totalTreeArea += nodes[newParent].constructionArea;
 
     nodes[bestSibling].parent = newParent;
@@ -443,12 +446,13 @@ size_t DBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uint
             nodes[oldParent].child[1] = newParent;
 
     refitAndRotateAncestors(newParent);
+    markProxyMoved(leaf);
 
     return leaf;
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::setCategoryBits(size_t leafIndex, uint64_t categoryBits)
+void SDBVH<T, Traits>::setCategoryBits(size_t leafIndex, uint64_t categoryBits)
 {
     assert(isLeaf(leafIndex) && "setCategoryBits() chamado em nó não-folha");
     nodes[leafIndex].categoryBits = categoryBits;
@@ -456,7 +460,7 @@ void DBVH<T, Traits>::setCategoryBits(size_t leafIndex, uint64_t categoryBits)
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::detachLeaf(size_t leafIndex)
+void SDBVH<T, Traits>::detachLeaf(size_t leafIndex)
 {
     if (leafIndex == static_cast<size_t>(root))
     {
@@ -492,7 +496,7 @@ void DBVH<T, Traits>::detachLeaf(size_t leafIndex)
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
+void SDBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
 {
     const AABBType& leafAABB = nodes[leafIndex].aabb;
 
@@ -505,7 +509,6 @@ void DBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
 
     NodeIndex bestSibling = findBestSibling(leafAABB);
     NodeIndex oldParent = nodes[bestSibling].parent;
-
     NodeIndex newParent = allocateNode();
     nodes[newParent].aabb = Traits::unite(leafAABB, nodes[bestSibling].aabb);
     nodes[newParent].constructionArea = Traits::surfaceArea(nodes[newParent].aabb);
@@ -513,7 +516,6 @@ void DBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
     nodes[newParent].child = {bestSibling, static_cast<NodeIndex>(leafIndex)};
     nodes[newParent].categoryBits = nodes[bestSibling].categoryBits | nodes[leafIndex].categoryBits;
     nodes[newParent].leafCount = nodes[bestSibling].leafCount + nodes[leafIndex].leafCount;
-    nodes[newParent].subtreeArea = nodes[newParent].constructionArea + nodes[bestSibling].subtreeArea + nodes[leafIndex].subtreeArea;
     totalTreeArea += nodes[newParent].constructionArea;
 
     nodes[bestSibling].parent = newParent;
@@ -531,7 +533,7 @@ void DBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::remove(size_t leafIndex)
+void SDBVH<T, Traits>::remove(size_t leafIndex)
 {
     assert(isLeaf(leafIndex) && "remove() chamado em nó não-folha");
     totalTreeArea -= Traits::surfaceArea(nodes[leafIndex].aabb);
@@ -541,12 +543,15 @@ void DBVH<T, Traits>::remove(size_t leafIndex)
 }
 
 template <typename T, typename Traits>
-size_t DBVH<T, Traits>::moveObject(size_t leafIndex, const AABBType& newAABB, const VecType& velocity, float epsilon)
+size_t SDBVH<T, Traits>::moveObject(size_t leafIndex, const AABBType& newAABB, const VecType& velocity, float epsilon)
 {
     assert(isLeaf(leafIndex) && "moveObject() chamado em nó não-folha");
 
     if (Traits::contains(nodes[leafIndex].aabb, newAABB))
+    {
+        markProxyMoved(leafIndex);
         return leafIndex;
+    }
 
     AABBType fatAABB = newAABB;
     if (config.enableFattening && epsilon > 0.0f)
@@ -557,16 +562,16 @@ size_t DBVH<T, Traits>::moveObject(size_t leafIndex, const AABBType& newAABB, co
     totalTreeArea -= Traits::surfaceArea(nodes[leafIndex].aabb);
     detachLeaf(leafIndex);
     nodes[leafIndex].aabb = fatAABB;
-    nodes[leafIndex].subtreeArea = Traits::surfaceArea(fatAABB);
-    nodes[leafIndex].constructionArea = nodes[leafIndex].subtreeArea;
-    totalTreeArea += nodes[leafIndex].subtreeArea;
+    nodes[leafIndex].constructionArea = Traits::surfaceArea(fatAABB);
+    totalTreeArea += nodes[leafIndex].constructionArea;
     reinsertLeaf(leafIndex);
+    markProxyMoved(leafIndex);
 
     return leafIndex;
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::enlargeProxy(size_t leafIndex, const AABBType& newAABB)
+void SDBVH<T, Traits>::enlargeProxy(size_t leafIndex, const AABBType& newAABB)
 {
     assert(isLeaf(leafIndex) && "enlargeProxy() chamado em nó não-folha");
 
@@ -574,8 +579,8 @@ void DBVH<T, Traits>::enlargeProxy(size_t leafIndex, const AABBType& newAABB)
     nodes[leafIndex].aabb = newAABB;
     float newArea = Traits::surfaceArea(newAABB);
     totalTreeArea += (newArea - oldArea);
-    nodes[leafIndex].subtreeArea = newArea;
     nodes[leafIndex].setEnlarged();
+    markProxyMoved(leafIndex);
 
     NodeIndex idx = nodes[leafIndex].parent;
     while (idx != NULL_NODE)
@@ -594,7 +599,6 @@ void DBVH<T, Traits>::enlargeProxy(size_t leafIndex, const AABBType& newAABB)
         node.aabb = combined;
         float newParentArea = Traits::surfaceArea(node.aabb);
         totalTreeArea += (newParentArea - oldParentArea);
-        node.subtreeArea = newParentArea + left.subtreeArea + right.subtreeArea;
         node.setEnlarged();
 
         idx = node.parent;
@@ -602,8 +606,96 @@ void DBVH<T, Traits>::enlargeProxy(size_t leafIndex, const AABBType& newAABB)
 }
 
 template <typename T, typename Traits>
+void SDBVH<T, Traits>::markProxyMoved(size_t leafIndex)
+{
+    NodeIndex idx = static_cast<NodeIndex>(leafIndex);
+    while (idx != NULL_NODE)
+    {
+        if (nodes[idx].isMoved())
+            break;
+        nodes[idx].setMoved();
+        idx = nodes[idx].parent;
+    }
+}
+
+template <typename T, typename Traits>
+void SDBVH<T, Traits>::clearMoved()
+{
+    if (root == NULL_NODE || !nodes[root].isMoved())
+        return;
+
+    FixedStack<NodeIndex, 256> stack;
+    stack.push(root);
+
+    while (!stack.empty())
+    {
+        NodeIndex idx = stack.pop();
+        NodeType& node = nodes[idx];
+        if (!node.isMoved())
+            continue;
+
+        node.clearMoved();
+        if (!node.isLeaf())
+        {
+            if (node.child[0] != NULL_NODE) stack.push(node.child[0]);
+            if (node.child[1] != NULL_NODE) stack.push(node.child[1]);
+        }
+    }
+}
+
+template <typename T, typename Traits>
 template <typename F>
-void DBVH<T, Traits>::query(const AABBType& queryAABB, F&& callback, uint64_t maskBits) const
+void SDBVH<T, Traits>::queryMaskMoved(const AABBType& queryAABB, F&& callback, uint64_t maskBits) const
+{
+    if (root == NULL_NODE) return;
+
+    const NodeType& rootNode = nodes[root];
+    if (!rootNode.isMoved() || (rootNode.categoryBits & maskBits) == 0 || !Traits::overlaps(rootNode.aabb, queryAABB))
+        return;
+
+    NodeIndex stack[256];
+    int stackCount = 0;
+    NodeIndex current = root;
+
+    while (current != NULL_NODE)
+    {
+        const NodeType& node = nodes[current];
+
+        if (node.isLeaf())
+        {
+            if (!callback(static_cast<size_t>(current), node.userData))
+                return;
+            current = (stackCount > 0) ? stack[--stackCount] : NULL_NODE;
+        }
+        else
+        {
+            NodeIndex c0 = node.child[0];
+            NodeIndex c1 = node.child[1];
+            const NodeType& n0 = nodes[c0];
+            const NodeType& n1 = nodes[c1];
+
+            bool hit0 = n0.isMoved() && ((n0.categoryBits & maskBits) != 0) && Traits::overlaps(n0.aabb, queryAABB);
+            bool hit1 = n1.isMoved() && ((n1.categoryBits & maskBits) != 0) && Traits::overlaps(n1.aabb, queryAABB);
+
+            if (hit0 && hit1)
+            {
+                if (stackCount < 256)
+                    stack[stackCount++] = c1;
+                current = c0;
+            }
+            else if (hit0)
+                current = c0;
+            else if (hit1)
+                current = c1;
+            else
+                current = (stackCount > 0) ? stack[--stackCount] : NULL_NODE;
+        }
+    }
+}
+
+template <typename T, typename Traits>
+template <typename F>
+void SDBVH<T, Traits>::query(const AABBType& queryAABB, F&& callback, uint64_t maskBits) const
 {
     if (root == NULL_NODE) return;
 
@@ -652,57 +744,8 @@ void DBVH<T, Traits>::query(const AABBType& queryAABB, F&& callback, uint64_t ma
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::queryFast(const AABBType& queryAABB, uint64_t maskBits, bool (*callback)(int32_t proxyId, uint64_t userData, void* context), void* context) const
-{
-    if (root == NULL_NODE) return;
-
-    const NodeType& rootNode = nodes[root];
-    if ((rootNode.categoryBits & maskBits) == 0 || !Traits::overlaps(rootNode.aabb, queryAABB))
-        return;
-
-    NodeIndex stack[256];
-    int stackCount = 0;
-    NodeIndex current = root;
-
-    while (current != NULL_NODE)
-    {
-        const NodeType& node = nodes[current];
-
-        if (node.isLeaf())
-        {
-            if (!callback(static_cast<int32_t>(current), static_cast<uint64_t>(node.userData), context))
-                return;
-            current = (stackCount > 0) ? stack[--stackCount] : NULL_NODE;
-        }
-        else
-        {
-            NodeIndex c0 = node.child[0];
-            NodeIndex c1 = node.child[1];
-            const NodeType& n0 = nodes[c0];
-            const NodeType& n1 = nodes[c1];
-
-            bool hit0 = ((n0.categoryBits & maskBits) != 0) && Traits::overlaps(n0.aabb, queryAABB);
-            bool hit1 = ((n1.categoryBits & maskBits) != 0) && Traits::overlaps(n1.aabb, queryAABB);
-
-            if (hit0 && hit1)
-            {
-                if (stackCount < 256)
-                    stack[stackCount++] = c1;
-                current = c0;
-            }
-            else if (hit0)
-                current = c0;
-            else if (hit1)
-                current = c1;
-            else
-                current = (stackCount > 0) ? stack[--stackCount] : NULL_NODE;
-        }
-    }
-}
-
-template <typename T, typename Traits>
 template <typename F>
-void DBVH<T, Traits>::rayCast(const VecType& origin, const VecType& direction, float maxFraction, F&& callback) const
+void SDBVH<T, Traits>::rayCast(const VecType& origin, const VecType& direction, float maxFraction, F&& callback) const
 {
     if (root == NULL_NODE) return;
 
@@ -736,16 +779,14 @@ void DBVH<T, Traits>::rayCast(const VecType& origin, const VecType& direction, f
 }
 
 template <typename T, typename Traits>
-std::vector<LeafPair> DBVH<T, Traits>::queryPairs() const
+template <typename F>
+void SDBVH<T, Traits>::queryPairs(NodeIndex startA, NodeIndex startB, F&& callback) const
 {
-    std::vector<LeafPair> pairs;
-    if (root == NULL_NODE) return pairs;
-
-    pairs.reserve(256);
+    if (root == NULL_NODE || !nodes[root].isMoved()) return;
 
     struct StackEntry { NodeIndex a, b; };
     FixedStack<StackEntry, 256> stack;
-    stack.push({root, root});
+    stack.push({startA, startB});
 
     while (!stack.empty())
     {
@@ -754,6 +795,9 @@ std::vector<LeafPair> DBVH<T, Traits>::queryPairs() const
         NodeIndex A = e.a, B = e.b;
         const NodeType& nodeA = nodes[A];
         const NodeType& nodeB = nodes[B];
+
+        if (!nodeA.isMoved() && !nodeB.isMoved())
+            continue;
 
         if (!Traits::overlaps(nodeA.aabb, nodeB.aabb))
             continue;
@@ -773,12 +817,13 @@ std::vector<LeafPair> DBVH<T, Traits>::queryPairs() const
 
         if (nodeA.isLeaf() && nodeB.isLeaf())
         {
-            if (A <= B)
-                pairs.emplace_back(static_cast<size_t>(A), static_cast<size_t>(B));
+            callback(static_cast<size_t>(A), static_cast<size_t>(B));
             continue;
         }
 
-        if (nodeB.isLeaf() || (!nodeA.isLeaf() && Traits::surfaceArea(nodeA.aabb) >= Traits::surfaceArea(nodeB.aabb)))
+        // Teste de SAH vs DFS
+        // if (nodeB.isLeaf() || (!nodeA.isLeaf() && Traits::surfaceArea(nodeA.aabb) >= Traits::surfaceArea(nodeB.aabb)))
+        if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.leafCount >= nodeB.leafCount))
         {
             stack.push({nodeA.child[0], B});
             stack.push({nodeA.child[1], B});
@@ -789,62 +834,124 @@ std::vector<LeafPair> DBVH<T, Traits>::queryPairs() const
             stack.push({A, nodeB.child[1]});
         }
     }
-
-    return pairs;
 }
 
 template <typename T, typename Traits>
 template <typename F>
-void DBVH<T, Traits>::queryPairs(F&& callback) const
+void SDBVH<T, Traits>::queryPairs(F&& callback) const
 {
-    if (root == NULL_NODE) return;
+    if (root != NULL_NODE)
+        queryPairs(root, root, std::forward<F>(callback));
+}
 
-    struct StackEntry { NodeIndex a, b; };
-    FixedStack<StackEntry, 256> stack;
-    stack.push({root, root});
+template <typename T, typename Traits>
+std::vector<LeafPair> SDBVH<T, Traits>::queryPairs() const
+{
+    std::vector<LeafPair> pairs;
+    // this pra evitar alerta do clang/msvc
+    this->queryPairs([&](size_t a, size_t b) {
+        pairs.emplace_back(a, b);
+    });
+    return pairs;
+}
 
-    while (!stack.empty())
+template <typename T, typename Traits>
+int SDBVH<T, Traits>::gatherSubtreePairs(NodeIndex* outA, NodeIndex* outB, int maxPairs) const
+{
+    if (root == NULL_NODE || !nodes[root].isMoved() || maxPairs <= 0)
+        return 0;
+
+    struct Pair { NodeIndex a, b; };
+    std::vector<Pair> queue;
+    queue.reserve(maxPairs * 2);
+    queue.push_back({root, root});
+
+    int count = 0;
+    while (!queue.empty() && (count + static_cast<int>(queue.size()) <= maxPairs))
     {
-        StackEntry e = stack.pop();
+        Pair p = queue.back();
+        queue.pop_back();
 
-        NodeIndex A = e.a, B = e.b;
+        NodeIndex A = p.a, B = p.b;
         const NodeType& nodeA = nodes[A];
         const NodeType& nodeB = nodes[B];
+
+        if (!nodeA.isMoved() && !nodeB.isMoved())
+            continue;
 
         if (!Traits::overlaps(nodeA.aabb, nodeB.aabb))
             continue;
 
         if (A == B)
         {
-            if (!nodeA.isLeaf())
+            if (nodeA.isLeaf())
+                continue;
+
+            NodeIndex c0 = nodeA.child[0];
+            NodeIndex c1 = nodeA.child[1];
+
+            if (count + static_cast<int>(queue.size()) + 3 <= maxPairs)
             {
-                NodeIndex c0 = nodeA.child[0];
-                NodeIndex c1 = nodeA.child[1];
-                stack.push({c0, c0});
-                stack.push({c1, c1});
-                stack.push({c0, c1});
+                if (nodes[c0].isMoved() && !nodes[c0].isLeaf())
+                    queue.push_back({c0, c0});
+                if (nodes[c1].isMoved() && !nodes[c1].isLeaf())
+                    queue.push_back({c1, c1});
+                if ((nodes[c0].isMoved() || nodes[c1].isMoved()) && Traits::overlaps(nodes[c0].aabb, nodes[c1].aabb))
+                    queue.push_back({c0, c1});
+            }
+            else
+            {
+                outA[count] = A;
+                outB[count] = B;
+                count++;
             }
             continue;
         }
 
         if (nodeA.isLeaf() && nodeB.isLeaf())
         {
-            if (A <= B)
-                callback(static_cast<size_t>(A), static_cast<size_t>(B));
+            outA[count] = A;
+            outB[count] = B;
+            count++;
             continue;
         }
 
-        if (nodeB.isLeaf() || (!nodeA.isLeaf() && Traits::surfaceArea(nodeA.aabb) >= Traits::surfaceArea(nodeB.aabb)))
+        if (count + static_cast<int>(queue.size()) + 2 <= maxPairs)
         {
-            stack.push({nodeA.child[0], B});
-            stack.push({nodeA.child[1], B});
+            if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.leafCount >= nodeB.leafCount))
+            {
+                queue.push_back({nodeA.child[0], B});
+                queue.push_back({nodeA.child[1], B});
+            }
+            else
+            {
+                queue.push_back({A, nodeB.child[0]});
+                queue.push_back({A, nodeB.child[1]});
+            }
         }
         else
         {
-            stack.push({A, nodeB.child[0]});
-            stack.push({A, nodeB.child[1]});
+            outA[count] = A;
+            outB[count] = B;
+            count++;
         }
     }
+
+    while (!queue.empty() && count < maxPairs)
+    {
+        Pair p = queue.back();
+        queue.pop_back();
+        const NodeType& nodeA = nodes[p.a];
+        const NodeType& nodeB = nodes[p.b];
+        if ((nodeA.isMoved() || nodeB.isMoved()) && Traits::overlaps(nodeA.aabb, nodeB.aabb))
+        {
+            outA[count] = p.a;
+            outB[count] = p.b;
+            count++;
+        }
+    }
+
+    return count;
 }
 
 // ============================================================================
@@ -852,7 +959,7 @@ void DBVH<T, Traits>::queryPairs(F&& callback) const
 // ============================================================================
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::refitAndRotateAncestors(NodeIndex startNode)
+void SDBVH<T, Traits>::refitAndRotateAncestors(NodeIndex startNode)
 {
     NodeIndex idx = startNode;
     while (idx != NULL_NODE)
@@ -870,8 +977,9 @@ void DBVH<T, Traits>::refitAndRotateAncestors(NodeIndex startNode)
 
             node.categoryBits = left.categoryBits | right.categoryBits;
             node.leafCount = left.leafCount + right.leafCount;
-            node.subtreeArea = newArea + left.subtreeArea + right.subtreeArea;
             node.setEnlarged();
+            if (left.isMoved() || right.isMoved())
+                node.setMoved();
 
             if (config.enableRotations)
                 tryRotate(idx);
@@ -881,7 +989,7 @@ void DBVH<T, Traits>::refitAndRotateAncestors(NodeIndex startNode)
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::tryRotate(NodeIndex idx)
+void SDBVH<T, Traits>::tryRotate(NodeIndex idx)
 {
     NodeType& A = nodes[idx];
     if (A.isLeaf()) return;
@@ -945,15 +1053,13 @@ void DBVH<T, Traits>::tryRotate(NodeIndex idx)
 
     nodes[Y].categoryBits = nodes[X].categoryBits | nodes[O].categoryBits;
     nodes[Y].leafCount = nodes[X].leafCount + nodes[O].leafCount;
-    nodes[Y].subtreeArea = newAreaY + nodes[X].subtreeArea + nodes[O].subtreeArea;
 
     A.categoryBits = nodes[A.child[0]].categoryBits | nodes[A.child[1]].categoryBits;
     A.leafCount = nodes[A.child[0]].leafCount + nodes[A.child[1]].leafCount;
-    A.subtreeArea = newAreaA + nodes[A.child[0]].subtreeArea + nodes[A.child[1]].subtreeArea;
 }
 
 template <typename T, typename Traits>
-NodeIndex DBVH<T, Traits>::findBestSibling(const AABBType& leafAABB) const
+NodeIndex SDBVH<T, Traits>::findBestSibling(const AABBType& leafAABB) const
 {
     if (root == NULL_NODE) return NULL_NODE;
 
@@ -1056,61 +1162,12 @@ NodeIndex DBVH<T, Traits>::findBestSibling(const AABBType& leafAABB) const
     return bestSibling;
 }
 
-template <typename T, typename Traits>
-template <typename F>
-void DBVH<T, Traits>::refitAll(F&& computeAABB)
-{
-    if (root == NULL_NODE) return;
-
-    struct StackEntry
-    {
-        NodeIndex node;
-        bool expanded;
-    };
-    FixedStack<StackEntry, 64> stack;
-    stack.push({root, false});
-
-    while (!stack.empty())
-    {
-        auto& top = stack.peek();
-        NodeType& node = nodes[top.node];
-
-        if (node.isLeaf())
-        {
-            node.aabb = computeAABB(node.userData);
-            node.setEnlarged();
-            stack.pop();
-            continue;
-        }
-
-        if (!top.expanded)
-        {
-            top.expanded = true;
-            stack.push({node.child[0], false});
-            stack.push({node.child[1], false});
-        }
-        else
-        {
-            node.aabb = Traits::unite(nodes[node.child[0]].aabb, nodes[node.child[1]].aabb);
-            node.setEnlarged();
-            stack.pop();
-        }
-    }
-}
-
-template <typename T, typename Traits>
-void DBVH<T, Traits>::clearAllEnlarged()
-{
-    for (auto& node : nodes)
-        node.clearEnlarged();
-}
-
 // ============================================================================
 // Rebuild — Reconstrução SAH top-down
 // ============================================================================
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::collectLeaves(NodeIndex node, std::vector<NodeIndex>& out) const
+void SDBVH<T, Traits>::collectLeaves(NodeIndex node, std::vector<NodeIndex>& out) const
 {
     if (node == NULL_NODE) return;
 
@@ -1133,7 +1190,7 @@ void DBVH<T, Traits>::collectLeaves(NodeIndex node, std::vector<NodeIndex>& out)
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::freeInternalNodes(NodeIndex node)
+void SDBVH<T, Traits>::freeInternalNodes(NodeIndex node)
 {
     if (node == NULL_NODE) return;
 
@@ -1155,7 +1212,7 @@ void DBVH<T, Traits>::freeInternalNodes(NodeIndex node)
 }
 
 template <typename T, typename Traits>
-NodeIndex DBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t start, size_t end)
+NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t start, size_t end)
 {
     size_t count = end - start;
 
@@ -1164,8 +1221,7 @@ NodeIndex DBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t s
         NodeIndex leaf = static_cast<NodeIndex>(leaves[start]);
         nodes[leaf].parent = NULL_NODE;
         nodes[leaf].leafCount = 1;
-        nodes[leaf].subtreeArea = Traits::surfaceArea(nodes[leaf].aabb);
-        nodes[leaf].constructionArea = nodes[leaf].subtreeArea;
+        nodes[leaf].constructionArea = Traits::surfaceArea(nodes[leaf].aabb);
         return leaf;
     }
 
@@ -1176,19 +1232,18 @@ NodeIndex DBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t s
         NodeIndex right = static_cast<NodeIndex>(leaves[start + 1]);
 
         nodes[left].leafCount = 1;
-        nodes[left].subtreeArea = Traits::surfaceArea(nodes[left].aabb);
-        nodes[left].constructionArea = nodes[left].subtreeArea;
+        nodes[left].constructionArea = Traits::surfaceArea(nodes[left].aabb);
 
         nodes[right].leafCount = 1;
-        nodes[right].subtreeArea = Traits::surfaceArea(nodes[right].aabb);
-        nodes[right].constructionArea = nodes[right].subtreeArea;
+        nodes[right].constructionArea = Traits::surfaceArea(nodes[right].aabb);
 
         nodes[internal].child = {left, right};
         nodes[internal].aabb = Traits::unite(nodes[left].aabb, nodes[right].aabb);
         nodes[internal].constructionArea = Traits::surfaceArea(nodes[internal].aabb);
         nodes[internal].categoryBits = nodes[left].categoryBits | nodes[right].categoryBits;
         nodes[internal].leafCount = 2;
-        nodes[internal].subtreeArea = nodes[internal].constructionArea + nodes[left].subtreeArea + nodes[right].subtreeArea;
+        if (nodes[left].isMoved() || nodes[right].isMoved())
+            nodes[internal].setMoved();
         nodes[left].parent = internal;
         nodes[right].parent = internal;
 
@@ -1228,91 +1283,116 @@ NodeIndex DBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t s
         nodes[internal].child = {left, right};
         nodes[internal].aabb = Traits::unite(nodes[left].aabb, nodes[right].aabb);
         nodes[internal].constructionArea = Traits::surfaceArea(nodes[internal].aabb);
+        nodes[internal].categoryBits = nodes[left].categoryBits | nodes[right].categoryBits;
+        nodes[internal].leafCount = nodes[left].leafCount + nodes[right].leafCount;
+        if (nodes[left].isMoved() || nodes[right].isMoved())
+            nodes[internal].setMoved();
         nodes[left].parent = internal;
         nodes[right].parent = internal;
 
         return internal;
     }
 
-    constexpr int NUM_BINS = 12;
-    struct Bin { AABBType bounds; size_t count{0}; };
-    std::array<Bin, NUM_BINS> bins{};
-
-    float scale = static_cast<float>(NUM_BINS) / (axisMax - axisMin);
-
-    // Distribui folhas nos bins pelo centróide
-    for (size_t i = start; i < end; ++i)
-    {
-        VecType c = Traits::centroid(nodes[leaves[i]].aabb);
-        float cv = Traits::getAxis(c, axis);
-        int b = std::min(static_cast<int>((cv - axisMin) * scale), NUM_BINS - 1);
-
-        if (bins[b].count == 0)
-            bins[b].bounds = nodes[leaves[i]].aabb;
-        else
-            bins[b].bounds = Traits::unite(bins[b].bounds, nodes[leaves[i]].aabb);
-        bins[b].count++;
-    }
-
-    // Avalia o custo SAH para cada plano de partição
-    float bestCost = std::numeric_limits<float>::max();
-    int   bestSplit = -1;
-
-    for (int s = 0; s < NUM_BINS - 1; ++s)
-    {
-        AABBType leftBounds{}, rightBounds{};
-        size_t leftCount = 0, rightCount = 0;
-        bool leftInit = false, rightInit = false;
-
-        for (int j = 0; j <= s; ++j)
-            if (bins[j].count > 0)
-            {
-                leftBounds = leftInit ? Traits::unite(leftBounds, bins[j].bounds) : bins[j].bounds;
-                leftInit = true;
-                leftCount += bins[j].count;
-            }
-            
-        for (int j = s + 1; j < NUM_BINS; ++j)
-            if (bins[j].count > 0)
-            {
-                rightBounds = rightInit ? Traits::unite(rightBounds, bins[j].bounds) : bins[j].bounds;
-                rightInit = true;
-                rightCount += bins[j].count;
-            }
-
-        if (leftCount == 0 || rightCount == 0) continue;
-
-        float cost = static_cast<float>(leftCount) * Traits::surfaceArea(leftBounds)
-                   + static_cast<float>(rightCount) * Traits::surfaceArea(rightBounds);
-
-        if (cost < bestCost)
-        {
-            bestCost = cost;
-            bestSplit = s;
-        }
-    }
-
-    // Particiona as folhas de acordo com o melhor split
     size_t mid;
-    if (bestSplit < 0)
-        mid = start + count / 2;
-    else
+
+    if (config.partitionAlgorithm == PartitionAlgorithm::MedianSplit)
     {
+        float pivot = 0.5f * (axisMin + axisMax);
         auto it = std::partition(
             leaves.begin() + static_cast<std::ptrdiff_t>(start),
             leaves.begin() + static_cast<std::ptrdiff_t>(end),
             [&](NodeIndex leaf)
             {
                 VecType c = Traits::centroid(nodes[leaf].aabb);
-                float cv = Traits::getAxis(c, axis);
-                int b = std::min(static_cast<int>((cv - axisMin) * scale), NUM_BINS - 1);
-                return b <= bestSplit;
+                return Traits::getAxis(c, axis) < pivot;
             }
         );
         mid = static_cast<size_t>(it - leaves.begin());
 
-        if (mid == start) mid = start + 1;
-        if (mid == end)   mid = end - 1;
+        if (mid == start || mid == end)
+            mid = start + count / 2;
+    }
+    else
+    {
+        constexpr int NUM_BINS = 12;
+        struct Bin { AABBType bounds; size_t count{0}; };
+        std::array<Bin, NUM_BINS> bins{};
+
+        float scale = static_cast<float>(NUM_BINS) / (axisMax - axisMin);
+
+        // Distribui folhas nos bins pelo centróide
+        for (size_t i = start; i < end; ++i)
+        {
+            VecType c = Traits::centroid(nodes[leaves[i]].aabb);
+            float cv = Traits::getAxis(c, axis);
+            int b = std::min(static_cast<int>((cv - axisMin) * scale), NUM_BINS - 1);
+
+            if (bins[b].count == 0)
+                bins[b].bounds = nodes[leaves[i]].aabb;
+            else
+                bins[b].bounds = Traits::unite(bins[b].bounds, nodes[leaves[i]].aabb);
+            bins[b].count++;
+        }
+
+        // Avalia o custo SAH para cada plano de partição
+        float bestCost = std::numeric_limits<float>::max();
+        int   bestSplit = -1;
+
+        for (int s = 0; s < NUM_BINS - 1; ++s)
+        {
+            AABBType leftBounds{}, rightBounds{};
+            size_t leftCount = 0, rightCount = 0;
+            bool leftInit = false, rightInit = false;
+
+            for (int j = 0; j <= s; ++j)
+                if (bins[j].count > 0)
+                {
+                    leftBounds = leftInit ? Traits::unite(leftBounds, bins[j].bounds) : bins[j].bounds;
+                    leftInit = true;
+                    leftCount += bins[j].count;
+                }
+                
+            for (int j = s + 1; j < NUM_BINS; ++j)
+                if (bins[j].count > 0)
+                {
+                    rightBounds = rightInit ? Traits::unite(rightBounds, bins[j].bounds) : bins[j].bounds;
+                    rightInit = true;
+                    rightCount += bins[j].count;
+                }
+
+            if (leftCount == 0 || rightCount == 0) continue;
+
+            float cost = static_cast<float>(leftCount) * Traits::surfaceArea(leftBounds)
+                       + static_cast<float>(rightCount) * Traits::surfaceArea(rightBounds);
+
+            if (cost < bestCost)
+            {
+                bestCost = cost;
+                bestSplit = s;
+            }
+        }
+
+        // Particiona as folhas de acordo com o melhor split
+        if (bestSplit < 0)
+            mid = start + count / 2;
+        else
+        {
+            auto it = std::partition(
+                leaves.begin() + static_cast<std::ptrdiff_t>(start),
+                leaves.begin() + static_cast<std::ptrdiff_t>(end),
+                [&](NodeIndex leaf)
+                {
+                    VecType c = Traits::centroid(nodes[leaf].aabb);
+                    float cv = Traits::getAxis(c, axis);
+                    int b = std::min(static_cast<int>((cv - axisMin) * scale), NUM_BINS - 1);
+                    return b <= bestSplit;
+                }
+            );
+            mid = static_cast<size_t>(it - leaves.begin());
+
+            if (mid == start) mid = start + 1;
+            if (mid == end)   mid = end - 1;
+        }
     }
 
     NodeIndex internal = static_cast<NodeIndex>(allocateNode());
@@ -1324,7 +1404,8 @@ NodeIndex DBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t s
     nodes[internal].constructionArea = Traits::surfaceArea(nodes[internal].aabb);
     nodes[internal].categoryBits = nodes[left].categoryBits | nodes[right].categoryBits;
     nodes[internal].leafCount = nodes[left].leafCount + nodes[right].leafCount;
-    nodes[internal].subtreeArea = nodes[internal].constructionArea + nodes[left].subtreeArea + nodes[right].subtreeArea;
+    if (nodes[left].isMoved() || nodes[right].isMoved())
+        nodes[internal].setMoved();
     nodes[left].parent = internal;
     nodes[right].parent = internal;
 
@@ -1332,7 +1413,7 @@ NodeIndex DBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t s
 }
 
 template <typename T, typename Traits>
-float DBVH<T, Traits>::computeTotalSurfaceArea() const
+float SDBVH<T, Traits>::computeTotalSurfaceArea() const
 {
     if (root == NULL_NODE) return 0.0f;
     float sum = 0.0f;
@@ -1354,7 +1435,7 @@ float DBVH<T, Traits>::computeTotalSurfaceArea() const
 }
 
 template <typename T, typename Traits>
-float DBVH<T, Traits>::getDegradationAlpha() const
+float SDBVH<T, Traits>::getDegradationAlpha() const
 {
     if (root == NULL_NODE || leafCount <= 1) return 0.0f;
     float rootArea = Traits::surfaceArea(nodes[root].aabb);
@@ -1365,7 +1446,7 @@ float DBVH<T, Traits>::getDegradationAlpha() const
 }
 
 template <typename T, typename Traits>
-void DBVH<T, Traits>::rebuild(NodeIndex subtreeRoot, bool updateArea)
+void SDBVH<T, Traits>::rebuild(NodeIndex subtreeRoot, bool updateArea)
 {
     NodeIndex target = (subtreeRoot == NULL_NODE) ? root : subtreeRoot;
     if (target == NULL_NODE) return;
@@ -1375,6 +1456,9 @@ void DBVH<T, Traits>::rebuild(NodeIndex subtreeRoot, bool updateArea)
     collectLeaves(target, leaves);
 
     if (leaves.empty()) return;
+
+    for (NodeIndex leaf : leaves)
+        nodes[leaf].setMoved();
 
     NodeIndex parentOfSubtree = nodes[target].parent;
     int childIdx = (parentOfSubtree != NULL_NODE)
@@ -1398,12 +1482,14 @@ void DBVH<T, Traits>::rebuild(NodeIndex subtreeRoot, bool updateArea)
         refitAndRotateAncestors(parentOfSubtree);
     }
 
+    markProxyMoved(newRoot);
+
     if (updateArea)
         totalTreeArea = computeTotalSurfaceArea();
 }
 
 template <typename T, typename Traits>
-int DBVH<T, Traits>::computeSubtreeHeight(NodeIndex nodeIdx) const
+int SDBVH<T, Traits>::computeSubtreeHeight(NodeIndex nodeIdx) const
 {
     if (nodeIdx == NULL_NODE || nodes[nodeIdx].isLeaf()) return 0;
     int hL = (nodes[nodeIdx].child[0] != NULL_NODE) ? computeSubtreeHeight(nodes[nodeIdx].child[0]) : 0;
@@ -1412,14 +1498,14 @@ int DBVH<T, Traits>::computeSubtreeHeight(NodeIndex nodeIdx) const
 }
 
 template <typename T, typename Traits>
-int DBVH<T, Traits>::getHeight() const
+int SDBVH<T, Traits>::getHeight() const
 {
     if (root == NULL_NODE) return 0;
     return computeSubtreeHeight(root);
 }
 
 template <typename T, typename Traits>
-TreeQualityMetrics DBVH<T, Traits>::computeQualityMetrics(float traversalCost, float isectCost) const
+TreeQualityMetrics SDBVH<T, Traits>::computeQualityMetrics(float traversalCost, float isectCost) const
 {
     TreeQualityMetrics metrics{};
     if (root == NULL_NODE) return metrics;
@@ -1468,11 +1554,11 @@ TreeQualityMetrics DBVH<T, Traits>::computeQualityMetrics(float traversalCost, f
 }
 
 template <typename T, typename Traits>
-TreeQualityMetrics DBVH<T, Traits>::computeIdealFromAABBs(const std::vector<AABBType>& leafAABBs, float traversalCost, float isectCost)
+TreeQualityMetrics SDBVH<T, Traits>::computeIdealFromAABBs(const std::vector<AABBType>& leafAABBs, float traversalCost, float isectCost)
 {
     if (leafAABBs.empty()) return TreeQualityMetrics{};
 
-    DBVH<T, Traits> idealTree;
+    SDBVH<T, Traits> idealTree;
     std::vector<NodeIndex> leaves;
     leaves.reserve(leafAABBs.size());
 
@@ -1493,7 +1579,7 @@ TreeQualityMetrics DBVH<T, Traits>::computeIdealFromAABBs(const std::vector<AABB
 }
 
 template <typename T, typename Traits>
-TreeQualityMetrics DBVH<T, Traits>::computeIdealQualityMetrics(float traversalCost, float isectCost) const
+TreeQualityMetrics SDBVH<T, Traits>::computeIdealQualityMetrics(float traversalCost, float isectCost) const
 {
     if (root == NULL_NODE) return TreeQualityMetrics{};
 
@@ -1512,7 +1598,7 @@ TreeQualityMetrics DBVH<T, Traits>::computeIdealQualityMetrics(float traversalCo
 }
 
 template <typename T, typename Traits>
-int DBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric, int maxRebuilds, int maxSubtreeLeaves)
+int SDBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric, int maxRebuilds, int maxSubtreeLeaves)
 {
     if (root == NULL_NODE || maxRebuilds <= 0) return 0;
 
@@ -1563,50 +1649,6 @@ int DBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric, 
             return a.score > b.score;
         });
     }
-    else if (metric == DegradationMetric::SubtreeSAH)
-    {
-        NodeIndex stack[256];
-        int stackCount = 0;
-        stack[stackCount++] = root;
-
-        while (stackCount > 0)
-        {
-            NodeIndex idx = stack[--stackCount];
-            const NodeType& node = nodes[idx];
-
-            if (node.isLeaf() || node.leafCount < 2) continue;
-
-            float sa_k = Traits::surfaceArea(node.aabb);
-            float denom = sa_k * static_cast<float>(node.leafCount) * std::log2(static_cast<float>(node.leafCount));
-            float alpha_k = (denom > 1e-7f) ? (node.subtreeArea / denom) : 0.0f;
-
-            if (alpha_k > threshold)
-            {
-                if (maxSubtreeLeaves <= 0 || static_cast<int>(node.leafCount) <= maxSubtreeLeaves || (node.child[0] == NULL_NODE && node.child[1] == NULL_NODE))
-                    candidates.push_back({idx, alpha_k, node.leafCount});
-                else
-                {
-                    if (node.child[0] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[0];
-                    if (node.child[1] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[1];
-                }
-            }
-            else
-            {
-                if (node.child[0] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[0];
-                if (node.child[1] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[1];
-            }
-        }
-
-        if (candidates.empty() && getDegradationAlpha() > threshold)
-        {
-            if (maxSubtreeLeaves <= 0 || static_cast<int>(nodes[root].leafCount) <= maxSubtreeLeaves)
-                candidates.push_back({root, getDegradationAlpha(), nodes[root].leafCount});
-        }
-        else
-            std::sort(candidates.begin(), candidates.end(), [](const CandidateInfo& a, const CandidateInfo& b) {
-                return a.leafCount > b.leafCount;
-            });
-    }
 
     int rebuildCount = 0;
     for (const auto& cand : candidates)
@@ -1626,4 +1668,5 @@ int DBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric, 
     return rebuildCount;
 }
 
-} // namespace dbvh
+
+} // namespace sdbvh

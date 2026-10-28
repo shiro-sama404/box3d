@@ -1,11 +1,14 @@
-// AABB — Axis-Aligned Bounding Box para a DBVH
-
 #pragma once
 
-#include "Vec3.h"
+#include "vec3.h"
 #include <algorithm>
 
-namespace dbvh
+#if !defined(BOX3D_DISABLE_SIMD) && (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#define SDBVH_SIMD_SSE2 1
+#include <emmintrin.h>
+#endif
+
+namespace sdbvh
 {
 
 struct AABB
@@ -33,18 +36,50 @@ struct AABB
         );
     }
 
-    [[nodiscard]] constexpr bool overlaps(const AABB& other) const noexcept
+    [[nodiscard]] inline bool overlaps(const AABB& other) const noexcept
     {
+#if defined(SDBVH_SIMD_SSE2)
+        const float* a_base = &min.x;
+        const float* b_base = &other.min.x;
+
+        __m128 a_v1 = _mm_loadu_ps(a_base + 2);
+        __m128 a_lower = _mm_loadu_ps(a_base);
+        __m128 a_upper = _mm_shuffle_ps(a_v1, a_v1, _MM_SHUFFLE(3, 3, 2, 1));
+
+        __m128 b_v1 = _mm_loadu_ps(b_base + 2);
+        __m128 b_lower = _mm_loadu_ps(b_base);
+        __m128 b_upper = _mm_shuffle_ps(b_v1, b_v1, _MM_SHUFFLE(3, 3, 2, 1));
+
+        __m128 test = _mm_and_ps(_mm_cmple_ps(a_lower, b_upper), _mm_cmple_ps(b_lower, a_upper));
+        return (_mm_movemask_ps(test) & 0x7) == 0x7;
+#else
         return (min.x <= other.max.x && max.x >= other.min.x) &&
                (min.y <= other.max.y && max.y >= other.min.y) &&
                (min.z <= other.max.z && max.z >= other.min.z);
+#endif
     }
 
-    [[nodiscard]] constexpr bool contains(const AABB& other) const noexcept
+    [[nodiscard]] inline bool contains(const AABB& other) const noexcept
     {
+#if defined(SDBVH_SIMD_SSE2)
+        const float* a_base = &min.x;
+        const float* b_base = &other.min.x;
+
+        __m128 a_v1 = _mm_loadu_ps(a_base + 2);
+        __m128 a_lower = _mm_loadu_ps(a_base);
+        __m128 a_upper = _mm_shuffle_ps(a_v1, a_v1, _MM_SHUFFLE(3, 3, 2, 1));
+
+        __m128 b_v1 = _mm_loadu_ps(b_base + 2);
+        __m128 b_lower = _mm_loadu_ps(b_base);
+        __m128 b_upper = _mm_shuffle_ps(b_v1, b_v1, _MM_SHUFFLE(3, 3, 2, 1));
+
+        __m128 test = _mm_and_ps(_mm_cmple_ps(a_lower, b_lower), _mm_cmple_ps(b_upper, a_upper));
+        return (_mm_movemask_ps(test) & 0x7) == 0x7;
+#else
         return (min.x <= other.min.x && max.x >= other.max.x) &&
                (min.y <= other.min.y && max.y >= other.max.y) &&
                (min.z <= other.min.z && max.z >= other.max.z);
+#endif
     }
 
     /// @brief Expande a caixa uniformemente por uma margem epsilon.
@@ -113,4 +148,4 @@ struct AABB
     }
 };
 
-} // namespace dbvh
+} // namespace sdbvh

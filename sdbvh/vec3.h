@@ -1,8 +1,6 @@
-// Vec3 — Vetor 3D básico para a DBVH
-
 #pragma once
 
-namespace dbvh
+namespace sdbvh
 {
 
 struct Vec3
@@ -35,4 +33,4 @@ struct Vec3
     friend constexpr Vec3 operator *(float s, Vec3 a) noexcept { a *= s; return a; }
 };
 
-} // namespace dbvh
+} // namespace sdbvh
