@@ -19,6 +19,43 @@ inline bool operator<( b3BodyId a, b3BodyId b )
 	return ua < ub;
 }
 
+static bool DrawActorScaleControls( SampleContext* context )
+{
+	static const int actorCounts[] = { 128, 256, 512, 640, 1024, 2048, 4096, 8192, 16384 };
+	static const char* actorLabels[] = { "128", "256", "512", "640 (Default)", "1024", "2048", "4096", "8192", "16384" };
+	static int currentSelection = 3;
+
+	int currentCount = GetBenchmarkActorCount();
+	if ( currentCount > 0 )
+	{
+		for ( int i = 0; i < (int)IM_ARRAYSIZE( actorCounts ); ++i )
+		{
+			if ( actorCounts[i] == currentCount )
+			{
+				currentSelection = i;
+				break;
+			}
+		}
+	}
+
+	ImGui::SeparatorText( "Scale Benchmark" );
+	if ( ImGui::Combo( "Actor Count", &currentSelection, actorLabels, IM_ARRAYSIZE( actorLabels ) ) )
+	{
+		SetBenchmarkActorCount( actorCounts[currentSelection] );
+		context->restart = true;
+		return true;
+	}
+
+	if ( ImGui::Button( "Restart With Scale" ) )
+	{
+		SetBenchmarkActorCount( actorCounts[currentSelection] );
+		context->restart = true;
+		return true;
+	}
+
+	return false;
+}
+
 class BenchmarkLargePyramid : public Sample
 {
 public:
@@ -80,6 +117,10 @@ public:
 			m_camera->SetView( -10.0f, 10.0f, 120.0f, { 0.0f, 5.0f, 0.0f } );
 		}
 
+		b3Capacity capacity = {};
+		GetManyPyramidsCapacity( &capacity );
+		CreateWorld( &capacity );
+
 		CreateManyPyramids( m_worldId );
 
 		// float frictionTorque = 5.0f;
@@ -92,6 +133,11 @@ public:
 		// CreateHuman( &human, m_worldId, position, frictionTorque, hertz, dampingRatio, 0, nullptr, colorize );
 
 		SetGroundShape( GetGroundShapeId() );
+	}
+
+	bool DrawControls() override
+	{
+		return DrawActorScaleControls( m_context );
 	}
 
 	static Sample* Create( SampleContext* context )
@@ -1447,6 +1493,11 @@ public:
 		Sample::Step();
 	}
 
+	bool DrawControls() override
+	{
+		return DrawActorScaleControls( m_context );
+	}
+
 	static Sample* Create( SampleContext* context )
 	{
 		return new BenchmarkJunkyard( context );
@@ -1481,39 +1532,7 @@ public:
 
 	bool DrawControls() override
 	{
-		static const int actorCounts[] = { 128, 256, 512, 640, 1024, 2048, 4096, 8192, 16384 };
-		static const char* actorLabels[] = { "128", "256", "512", "640 (Default)", "1024", "2048", "4096", "8192", "16384" };
-		static int currentSelection = 3;
-
-		int currentCount = GetBenchmarkActorCount();
-		if ( currentCount > 0 )
-		{
-			for ( int i = 0; i < (int)IM_ARRAYSIZE( actorCounts ); ++i )
-			{
-				if ( actorCounts[i] == currentCount )
-				{
-					currentSelection = i;
-					break;
-				}
-			}
-		}
-
-		ImGui::SeparatorText( "Scale Benchmark" );
-		if ( ImGui::Combo( "Actor Count", &currentSelection, actorLabels, IM_ARRAYSIZE( actorLabels ) ) )
-		{
-			SetBenchmarkActorCount( actorCounts[currentSelection] );
-			m_context->restart = true;
-			return true;
-		}
-
-		if ( ImGui::Button( "Restart With Scale" ) )
-		{
-			SetBenchmarkActorCount( actorCounts[currentSelection] );
-			m_context->restart = true;
-			return true;
-		}
-
-		return false;
+		return DrawActorScaleControls( m_context );
 	}
 
 	static Sample* Create( SampleContext* context )
@@ -1554,6 +1573,11 @@ public:
 		DrawTextLine( "spinner angle = %.2f", GetSpinnerAngle() );
 	}
 
+	bool DrawControls() override
+	{
+		return DrawActorScaleControls( m_context );
+	}
+
 	static Sample* Create( SampleContext* context )
 	{
 		return new BenchmarkSpinner( context );
@@ -1561,6 +1585,44 @@ public:
 };
 
 static int benchmarkSpinner = RegisterSample( "Benchmark", "Spinner", BenchmarkSpinner::Create );
+
+class BenchmarkRagdollPile : public Sample
+{
+public:
+	explicit BenchmarkRagdollPile( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_camera->SetView( 0.0f, 25.0f, 60.0f, { 0.0f, 5.0f, 0.0f } );
+		}
+
+		b3Capacity capacity = {};
+		GetRagdollPileCapacity( &capacity );
+		CreateWorld( &capacity );
+
+		CreateRagdollPile( m_worldId );
+
+		SetGroundShape( GetGroundShapeId() );
+	}
+
+	~BenchmarkRagdollPile() override
+	{
+		DestroyRagdollPile();
+	}
+
+	bool DrawControls() override
+	{
+		return DrawActorScaleControls( m_context );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new BenchmarkRagdollPile( context );
+	}
+};
+
+static int sampleRagdollPileBenchmark = RegisterSample( "Benchmark", "Ragdoll Pile", BenchmarkRagdollPile::Create );
 
 class BenchmarkSleep : public Sample
 {

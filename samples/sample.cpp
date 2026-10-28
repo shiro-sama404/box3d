@@ -24,8 +24,8 @@
 #include "utils.h"
 
 #include "box3d/box3d.h"
-// DBVH Integration: Include DBVH C API for sample controls and inspector sync
-#include "../dbvh/dbvh_c_api.h"
+// SDBVH Integration: Include SDBVH C API for sample controls and inspector sync
+#include "../sdbvh/sdbvh_c_api.h"
 
 #include <ctype.h>
 #include <filesystem>
@@ -388,8 +388,8 @@ void Sample::CreateWorld( b3Capacity* capacity )
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.workerCount = m_context->workerCount;
 	worldDef.enableSleep = m_context->enableSleep;
-	// DBVH Integration: Forward DBVH toggle to b3WorldDef
-	worldDef.useDBVH = m_context->useDBVH;
+	// SDBVH Integration: Forward DBVH toggle to b3WorldDef
+	worldDef.useSDBVH = m_context->useSDBVH;
 	AttachToWorldDef( &worldDef );
 	if ( capacity != nullptr )
 	{
@@ -399,19 +399,18 @@ void Sample::CreateWorld( b3Capacity* capacity )
 
 	b3World_SetContactRecycleDistance( m_worldId, m_context->recycleDistance );
 
-	// DBVH Integration: Push initial DBVH config parameters to the created world
-	dbvh_config_t dbvhCfg;
-	dbvhCfg.enableRebuild = m_context->dbvhEnableRebuild;
-	dbvhCfg.enableFattening = m_context->dbvhEnableFattening;
-	dbvhCfg.enablePredictive = m_context->dbvhEnablePredictive;
-	dbvhCfg.enableRotations = m_context->dbvhEnableRotations;
-	dbvhCfg.degradationMetric = static_cast<dbvh_degradation_metric_t>( m_context->dbvhMetric );
-	dbvhCfg.rebuildThreshold = ( m_context->dbvhMetric == 0 ) ? m_context->dbvhAreaRatioThreshold : m_context->dbvhSubtreeSAHThreshold;
-	dbvhCfg.areaRatioThreshold = m_context->dbvhAreaRatioThreshold;
-	dbvhCfg.subtreeSAHThreshold = m_context->dbvhSubtreeSAHThreshold;
-	dbvhCfg.rebuildInterval = m_context->dbvhRebuildInterval;
-	dbvhCfg.maxRebuildsPerFrame = m_context->dbvhMaxRebuildsPerFrame;
-	b3World_SetDBVHConfig( m_worldId, &dbvhCfg );
+	// SDBVH Integration: Push initial SDBVH config parameters to the created world
+	sdbvh_config_t sdbvhCfg;
+	sdbvhCfg.enableRebuild = m_context->sdbvhEnableRebuild;
+	sdbvhCfg.enableFattening = m_context->sdbvhEnableFattening;
+	sdbvhCfg.enablePredictive = m_context->sdbvhEnablePredictive;
+	sdbvhCfg.enableRotations = m_context->sdbvhEnableRotations;
+	sdbvhCfg.degradationMetric = static_cast<sdbvh_degradation_metric_t>( m_context->sdbvhMetric );
+	sdbvhCfg.areaRatioThreshold = m_context->sdbvhAreaRatioThreshold;
+	sdbvhCfg.subtreeSAHThreshold = m_context->sdbvhSubtreeSAHThreshold;
+	sdbvhCfg.rebuildInterval = m_context->sdbvhRebuildInterval;
+	sdbvhCfg.maxRebuildsPerFrame = m_context->sdbvhMaxRebuildsPerFrame;
+	b3World_SetSDBVHConfig( m_worldId, &sdbvhCfg );
 }
 
 void Sample::ResetText()
@@ -440,21 +439,20 @@ void Sample::Step()
 		m_context->singleStep = b3MaxInt( 0, m_context->singleStep - 1 );
 	}
 
-	// DBVH Integration: Keep runtime DBVH configuration synchronized with UI inspector state each step
+	// SDBVH Integration: Keep runtime SDBVH configuration synchronized with UI inspector state each step
 	if ( B3_IS_NON_NULL( m_worldId ) )
 	{
-		dbvh_config_t dbvhCfg;
-		dbvhCfg.enableRebuild = m_context->dbvhEnableRebuild;
-		dbvhCfg.enableFattening = m_context->dbvhEnableFattening;
-		dbvhCfg.enablePredictive = m_context->dbvhEnablePredictive;
-		dbvhCfg.enableRotations = m_context->dbvhEnableRotations;
-		dbvhCfg.degradationMetric = static_cast<dbvh_degradation_metric_t>( m_context->dbvhMetric );
-		dbvhCfg.rebuildThreshold = ( m_context->dbvhMetric == 0 ) ? m_context->dbvhAreaRatioThreshold : m_context->dbvhSubtreeSAHThreshold;
-		dbvhCfg.areaRatioThreshold = m_context->dbvhAreaRatioThreshold;
-		dbvhCfg.subtreeSAHThreshold = m_context->dbvhSubtreeSAHThreshold;
-		dbvhCfg.rebuildInterval = m_context->dbvhRebuildInterval;
-		dbvhCfg.maxRebuildsPerFrame = m_context->dbvhMaxRebuildsPerFrame;
-		b3World_SetDBVHConfig( m_worldId, &dbvhCfg );
+		sdbvh_config_t sdbvhCfg;
+		sdbvhCfg.enableRebuild = m_context->sdbvhEnableRebuild;
+		sdbvhCfg.enableFattening = m_context->sdbvhEnableFattening;
+		sdbvhCfg.enablePredictive = m_context->sdbvhEnablePredictive;
+		sdbvhCfg.enableRotations = m_context->sdbvhEnableRotations;
+		sdbvhCfg.degradationMetric = static_cast<sdbvh_degradation_metric_t>( m_context->sdbvhMetric );
+		sdbvhCfg.areaRatioThreshold = m_context->sdbvhAreaRatioThreshold;
+		sdbvhCfg.subtreeSAHThreshold = m_context->sdbvhSubtreeSAHThreshold;
+		sdbvhCfg.rebuildInterval = m_context->sdbvhRebuildInterval;
+		sdbvhCfg.maxRebuildsPerFrame = m_context->sdbvhMaxRebuildsPerFrame;
+		b3World_SetSDBVHConfig( m_worldId, &sdbvhCfg );
 	}
 
 	if ( B3_IS_NON_NULL( m_mouseJointId ) && b3Joint_IsValid( m_mouseJointId ) == false )
@@ -761,13 +759,16 @@ void Sample::DrawMetrics()
 		const ImU32 colorDefault = IM_COL32( 220, 220, 220, 255 );
 
 		const RowDef rows[kRowCount] = {
-			{ "step", 0, colorStep },		   { "pairs", 0, colorPairs },		  { "collide", 0, colorCollide },
-			{ "solve", 0, colorSolve },		   { "setup", 1, colorDefault },	  { "constraints", 1, colorDefault },
-			{ "prepare", 2, colorDefault },	   { "velocities", 2, colorDefault },	  { "warm start", 2, colorDefault },
-			{ "bias", 2, colorDefault },	   { "positions", 2, colorDefault },  { "relax", 2, colorDefault },
+			{ "step", 0, colorStep },		   { "pairs", 0, colorPairs },
+			{ "collide", 0, colorCollide },	   { "solve", 0, colorSolve },
+			{ "setup", 1, colorDefault },	   { "constraints", 1, colorDefault },
+			{ "prepare", 2, colorDefault },	   { "velocities", 2, colorDefault },
+			{ "warm start", 2, colorDefault }, { "bias", 2, colorDefault },
+			{ "positions", 2, colorDefault },  { "relax", 2, colorDefault },
 			{ "store", 2, colorDefault },	   { "split islands", 2, colorDefault },
-			{ "transforms", 1, colorDefault }, { "joint events", 1, colorDefault }, { "hit events", 1, colorDefault },
-			{ "refit BVH", 1, colorDefault },  { "sleep", 1, colorDefault },	  { "bullets", 1, colorDefault },
+			{ "transforms", 1, colorDefault }, { "joint events", 1, colorDefault },
+			{ "hit events", 1, colorDefault }, { "refit BVH", 1, colorDefault },
+			{ "sleep", 1, colorDefault },	   { "bullets", 1, colorDefault },
 			{ "sensors", 0, colorSensors },
 		};
 
@@ -988,7 +989,7 @@ void Sample::DrawMetrics()
 		ImGui::Text( "toi d/p/r = %d/%d/%d", s.distanceIterations, s.pushBackIterations, s.rootIterations );
 		ImGui::Text( "stack allocator size = %d K", s.stackUsed / 1024 );
 		ImGui::Text( "arena capacity = %d K", s.arenaCapacity / 1024 );
-		ImGui::Text( "total allocation = %d K", (int)(s.byteCount / 1024) );
+		ImGui::Text( "total allocation = %d K", (int)( s.byteCount / 1024 ) );
 
 		ImGui::Separator();
 		b3Capacity c = b3World_GetMaxCapacity( m_worldId );
@@ -1409,7 +1410,7 @@ void SelectSample( SampleContext* context, int selection, bool restart )
 		SetShadowSplits( SHADOW_SPLIT_NEAR, b3ClampFloat( diagonal, SHADOW_SPLIT_FAR, SHADOW_SPLIT_FAR_MAX ) );
 	}
 
-	if ( context->useDBVH && context->sample != nullptr && B3_IS_NON_NULL( context->sample->m_worldId ) )
+	if ( context->useSDBVH && context->sample != nullptr && B3_IS_NON_NULL( context->sample->m_worldId ) )
 	{
 		b3World_RebuildBroadPhase( context->sample->m_worldId );
 	}
@@ -2094,37 +2095,37 @@ static void DrawInfoPanel( SampleContext* context )
 			SelectSample( context, context->sampleIndex, true );
 		}
 
-		// DBVH Integration: Checkbox and expandable controls for DBVH experimentation
-		if ( ImGui::Checkbox( "DBVH Broadphase##Solver", &context->useDBVH ) )
+		// SDBVH Integration: Checkbox and expandable controls for DBVH experimentation
+		if ( ImGui::Checkbox( "SDBVH Broadphase##Solver", &context->useSDBVH ) )
 		{
 			SelectSample( context, context->sampleIndex, true );
 		}
 
-		if ( context->useDBVH )
+		if ( context->useSDBVH )
 		{
 			ImGui::Indent();
-			ImGui::Checkbox( "Enable Rebuild##DBVH", &context->dbvhEnableRebuild );
-			if ( context->dbvhEnableRebuild )
+			ImGui::Checkbox( "Enable Rebuild##SDBVH", &context->sdbvhEnableRebuild );
+			if ( context->sdbvhEnableRebuild )
 			{
 				const char* metrics[] = { "Area Ratio (Growth)", "Subtree SAH Cost (alpha_k)" };
-				ImGui::Combo( "Metric##DBVH", &context->dbvhMetric, metrics, IM_ARRAYSIZE( metrics ) );
-				if ( context->dbvhMetric == 0 )
+				ImGui::Combo( "Metric##SDBVH", &context->sdbvhMetric, metrics, IM_ARRAYSIZE( metrics ) );
+				if ( context->sdbvhMetric == 0 )
 				{
-					ImGui::SliderFloat( "Threshold (Area Ratio)##DBVH", &context->dbvhAreaRatioThreshold, 1.05f, 3.00f, "%.2fx" );
-					context->dbvhRebuildThreshold = context->dbvhAreaRatioThreshold;
+					ImGui::SliderFloat( "Threshold (Area Ratio)##SDBVH", &context->sdbvhAreaRatioThreshold, 1.05f, 3.00f,
+										"%.2fx" );
 				}
 				else
 				{
-					ImGui::SliderFloat( "Threshold (alpha SAH)##DBVH", &context->dbvhSubtreeSAHThreshold, 0.05f, 3.00f, "%.2f" );
-					context->dbvhRebuildThreshold = context->dbvhSubtreeSAHThreshold;
+					ImGui::SliderFloat( "Threshold (alpha SAH)##SDBVH", &context->sdbvhSubtreeSAHThreshold, 0.05f, 3.00f,
+										"%.2f" );
 				}
-				ImGui::SliderInt( "Check Interval##DBVH", &context->dbvhRebuildInterval, 1, 120, "%d frames" );
-				ImGui::SliderInt( "Rebuild Budget##DBVH", &context->dbvhMaxRebuildsPerFrame, 1, 10, "%d subtrees" );
+				ImGui::SliderInt( "Check Interval##SDBVH", &context->sdbvhRebuildInterval, 1, 120, "%d frames" );
+				ImGui::SliderInt( "Rebuild Budget##SDBVH", &context->sdbvhMaxRebuildsPerFrame, 1, 10, "%d subtrees" );
 			}
-			ImGui::Checkbox( "Enable Fattening##DBVH", &context->dbvhEnableFattening );
-			ImGui::Checkbox( "Predictive Expansion##DBVH", &context->dbvhEnablePredictive );
-			ImGui::Checkbox( "Tree Rotations##DBVH", &context->dbvhEnableRotations );
-			if ( ImGui::Button( "Rebuild Broadphase (SAH)##DBVH" ) )
+			ImGui::Checkbox( "Enable Fattening##SDBVH", &context->sdbvhEnableFattening );
+			ImGui::Checkbox( "Predictive Expansion##SDBVH", &context->sdbvhEnablePredictive );
+			ImGui::Checkbox( "Tree Rotations##SDBVH", &context->sdbvhEnableRotations );
+			if ( ImGui::Button( "Rebuild Broadphase (SAH)##SDBVH" ) )
 			{
 				b3World_RebuildBroadPhase( context->sample->m_worldId );
 			}

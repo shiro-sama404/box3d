@@ -31,6 +31,18 @@ void ResetGroundShapeId( void )
 	g_groundShapeId = b3_nullShapeId;
 }
 
+static int g_benchmarkActorCount = 0;
+
+void SetBenchmarkActorCount( int actorCount )
+{
+	g_benchmarkActorCount = actorCount;
+}
+
+int GetBenchmarkActorCount( void )
+{
+	return g_benchmarkActorCount;
+}
+
 void CreateJointGrid( b3WorldId worldId )
 {
 	b3World_EnableSleeping( worldId, false );
@@ -184,7 +196,15 @@ void CreateWidePyramid( b3WorldId worldId )
 	}
 }
 
-static void CreateSmallPyramid( b3WorldId worldId, int baseCount, float extent, float centerX, float baseZ )
+void GetManyPyramidsCapacity( b3Capacity* capacity )
+{
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 495 : 10780 );
+	capacity->dynamicShapeCount = n + 64;
+	capacity->dynamicBodyCount = n + 64;
+	capacity->contactCount = b3MaxInt( 50 * 1024, n * 16 );
+}
+
+static void CreateSmallPyramid( b3WorldId worldId, int baseCount, float extent, float centerX, float baseZ, int* spawned, int maxBodies )
 {
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_dynamicBody;
@@ -195,28 +215,50 @@ static void CreateSmallPyramid( b3WorldId worldId, int baseCount, float extent, 
 
 	b3BoxHull box = b3MakeBoxHull( extent, extent, extent );
 
-	for ( int i = 0; i < baseCount; ++i )
+	for ( int i = 0; i < baseCount && *spawned < maxBodies; ++i )
 	{
 		float y = ( 2.0f * i + 1.0f ) * extent;
 
-		for ( int j = i; j < baseCount; ++j )
+		for ( int j = i; j < baseCount && *spawned < maxBodies; ++j )
 		{
 			float x = ( i + 1.0f ) * extent + 2.0f * ( j - i ) * extent + centerX - 0.5f;
 			bodyDef.position = (b3Pos){ x, y, baseZ };
 
 			b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
 			b3CreateHullShape( bodyId, &shapeDef, &box.base );
+			( *spawned )++;
 		}
 	}
 }
 
 void CreateManyPyramids( b3WorldId worldId )
 {
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 495 : 10780 );
 	int baseCount = 10;
 	float extent = 0.5f;
-	int rowCount = BENCHMARK_DEBUG ? 3 : 14;
-	int columnCount = BENCHMARK_DEBUG ? 3 : 14;
-	float groundExtent = extent * columnCount * ( baseCount + 1.0f );
+
+	int rowCount, columnCount;
+	if ( g_benchmarkActorCount > 0 )
+	{
+		int pyramidsNeeded = ( n + 54 ) / 55;
+		columnCount = (int)ceilf( sqrtf( (float)pyramidsNeeded ) );
+		if ( columnCount < 1 )
+		{
+			columnCount = 1;
+		}
+		rowCount = ( pyramidsNeeded + columnCount - 1 ) / columnCount;
+		if ( rowCount < 1 )
+		{
+			rowCount = 1;
+		}
+	}
+	else
+	{
+		rowCount = BENCHMARK_DEBUG ? 3 : 14;
+		columnCount = BENCHMARK_DEBUG ? 3 : 14;
+	}
+
+	float groundExtent = b3MaxFloat( 25.0f, extent * columnCount * ( baseCount + 1.0f ) * 1.2f );
 
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
@@ -229,15 +271,16 @@ void CreateManyPyramids( b3WorldId worldId )
 	}
 
 	float baseWidth = 2.0f * extent * baseCount;
-	float baseZ = -groundExtent + 2.0f * extent;
-	float deltaZ = 2.0f * ( groundExtent - 2.0f * extent ) / ( rowCount - 1.0f );
+	float baseZ = -groundExtent + 4.0f * extent;
+	float deltaZ = ( rowCount > 1 ) ? 2.0f * ( groundExtent - 4.0f * extent ) / ( rowCount - 1.0f ) : 0.0f;
 
-	for ( int i = 0; i < rowCount; ++i )
+	int spawned = 0;
+	for ( int i = 0; i < rowCount && spawned < n; ++i )
 	{
-		for ( int j = 0; j < columnCount; ++j )
+		for ( int j = 0; j < columnCount && spawned < n; ++j )
 		{
-			float centerX = -groundExtent + j * ( baseWidth + 2.0f * extent ) + 2.0f * extent;
-			CreateSmallPyramid( worldId, baseCount, extent, centerX, baseZ );
+			float centerX = -groundExtent + j * ( baseWidth + 2.0f * extent ) + 4.0f * extent;
+			CreateSmallPyramid( worldId, baseCount, extent, centerX, baseZ, &spawned, n );
 		}
 
 		baseZ += deltaZ;
@@ -796,6 +839,33 @@ struct JunkyardData
 
 void CreateJunkyard( b3WorldId worldId )
 {
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? ( 21 * 21 * 2 ) : ( 21 * 21 * 24 ) );
+
+	int countXZ = 21;
+	if ( g_benchmarkActorCount > 0 )
+	{
+		if ( n <= 256 )
+		{
+			countXZ = 8;
+		}
+		else if ( n <= 1024 )
+		{
+			countXZ = 12;
+		}
+		else if ( n <= 4096 )
+		{
+			countXZ = 16;
+		}
+		else
+		{
+			countXZ = 21;
+		}
+	}
+
+	float halfSpan = 0.5f * (float)( countXZ - 1 ) * 4.0f;
+	float wallOffset = b3MaxFloat( 50.0f, halfSpan + 10.0f );
+	float groundExtent = wallOffset * 2.4f;
+
 	b3BodyId groundId;
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
@@ -806,49 +876,50 @@ void CreateJunkyard( b3WorldId worldId )
 	{
 		b3ShapeDef shapeDef = b3DefaultShapeDef();
 		{
-			b3BoxHull box = b3MakeBoxHull( 120.0f, 1.0f, 120.0f );
+			b3BoxHull box = b3MakeBoxHull( groundExtent, 1.0f, groundExtent );
 			g_groundShapeId = b3CreateHullShape( groundId, &shapeDef, &box.base );
 		}
 		{
-			b3Vec3 offset = { -50.0f, 8.0f, 0.0f };
-			b3BoxHull box = b3MakeOffsetBoxHull( 1.0f, 8.0f, 50.0f, offset );
+			b3Vec3 offset = { -wallOffset, 8.0f, 0.0f };
+			b3BoxHull box = b3MakeOffsetBoxHull( 1.0f, 8.0f, wallOffset, offset );
 			b3CreateHullShape( groundId, &shapeDef, &box.base );
 		}
 		{
-			b3Vec3 offset = { 50.0f, 8.0f, 0.0f };
-			b3BoxHull box = b3MakeOffsetBoxHull( 1.0f, 8.0f, 50.0f, offset );
+			b3Vec3 offset = { wallOffset, 8.0f, 0.0f };
+			b3BoxHull box = b3MakeOffsetBoxHull( 1.0f, 8.0f, wallOffset, offset );
 			b3CreateHullShape( groundId, &shapeDef, &box.base );
 		}
 		{
-			b3Vec3 offset = { 0.0f, 8.0f, -50.0f };
-			b3BoxHull box = b3MakeOffsetBoxHull( 50.0f, 8.0f, 1.0f, offset );
+			b3Vec3 offset = { 0.0f, 8.0f, -wallOffset };
+			b3BoxHull box = b3MakeOffsetBoxHull( wallOffset, 8.0f, 1.0f, offset );
 			b3CreateHullShape( groundId, &shapeDef, &box.base );
 		}
 		{
-			b3Vec3 offset = { 0.0f, 8.0f, 50.0f };
-			b3BoxHull box = b3MakeOffsetBoxHull( 50.0f, 8.0f, 1.0f, offset );
+			b3Vec3 offset = { 0.0f, 8.0f, wallOffset };
+			b3BoxHull box = b3MakeOffsetBoxHull( wallOffset, 8.0f, 1.0f, offset );
 			b3CreateHullShape( groundId, &shapeDef, &box.base );
 		}
 	}
 	{
 		b3HullData* rockHull = b3CreateRock( 1.5f );
 
-		int count = BENCHMARK_DEBUG ? 2 : 24;
 		float height = 24.0f;
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_dynamicBody;
 		b3ShapeDef shapeDef = b3DefaultShapeDef();
-		for ( int Y = 0; Y < count; ++Y )
+		int spawned = 0;
+		for ( int Y = 0; spawned < n; ++Y )
 		{
-			for ( int X = 0; X <= 20; ++X )
+			for ( int X = 0; X < countXZ && spawned < n; ++X )
 			{
-				for ( int Z = 0; Z <= 20; ++Z )
+				for ( int Z = 0; Z < countXZ && spawned < n; ++Z )
 				{
-					bodyDef.position.x = -40.0f + 4.0f * X;
-					bodyDef.position.y = 4.0f * Y + height + 1.0f;
-					bodyDef.position.z = -40.0f + 4.0f * Z;
+					bodyDef.position.x = -halfSpan + 4.0f * (float)X;
+					bodyDef.position.y = 4.0f * (float)Y + height + 1.0f;
+					bodyDef.position.z = -halfSpan + 4.0f * (float)Z;
 					b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
 					b3CreateHullShape( bodyId, &shapeDef, rockHull );
+					spawned++;
 				}
 			}
 		}
@@ -856,7 +927,7 @@ void CreateJunkyard( b3WorldId worldId )
 		b3DestroyHull( rockHull );
 	}
 
-	g_junkyardData.radius = 35.0f;
+	g_junkyardData.radius = wallOffset * 0.7f;
 	float mHeight = 24.0f;
 
 	b3HullData* hull = b3CreateCylinder( mHeight, 4.0f, 0.0f, 16 );
@@ -870,20 +941,14 @@ void CreateJunkyard( b3WorldId worldId )
 	b3DestroyHull( hull );
 }
 
-void GetJunkyardCapacity(b3Capacity* capacity)
+void GetJunkyardCapacity( b3Capacity* capacity )
 {
-#ifdef NDEBUG
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? ( 21 * 21 * 2 ) : ( 21 * 21 * 24 ) );
 	capacity->staticShapeCount = 16;
-	capacity->dynamicShapeCount = 20 * 20 * 24 + 1;
+	capacity->dynamicShapeCount = n + 64;
 	capacity->staticBodyCount = 16;
-	capacity->dynamicBodyCount = 20 * 20 * 24 + 1;
-	capacity->contactCount = 250 * 1024;
-#else
-	capacity->staticShapeCount = 16;
-	capacity->dynamicShapeCount = 20 * 20 * 2 + 1;
-	capacity->staticBodyCount = 16;
-	capacity->dynamicBodyCount = 20 * 20 * 2 + 1;
-#endif
+	capacity->dynamicBodyCount = n + 64;
+	capacity->contactCount = b3MaxInt( 50 * 1024, n * 24 );
 }
 
 void StepJunkyard( b3WorldId worldId, int stepCount )
@@ -903,18 +968,6 @@ void StepJunkyard( b3WorldId worldId, int stepCount )
 
 // Huge pile of large convexes, ported from PEEL. Each convex is the hull of 32 random points on a
 // sphere. A fixed LCG seed makes the hull identical across runs so results compare directly.
-
-static int g_benchmarkActorCount = 0;
-
-void SetBenchmarkActorCount( int actorCount )
-{
-	g_benchmarkActorCount = actorCount;
-}
-
-int GetBenchmarkActorCount( void )
-{
-	return g_benchmarkActorCount;
-}
 
 void GetConvexPileCapacity( b3Capacity* capacity )
 {
@@ -1112,11 +1165,12 @@ static b3MeshData* CreateInwardCylinderMesh( float radius, float halfDepth, floa
 
 void GetSpinnerCapacity( b3Capacity* capacity )
 {
-	capacity->staticShapeCount = 4;
-	capacity->staticBodyCount = 4;
-	capacity->dynamicShapeCount = 2000;
-	capacity->dynamicBodyCount = 2000;
-	capacity->contactCount = 20000;
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 500 : 1500 );
+	capacity->staticShapeCount = 8;
+	capacity->staticBodyCount = 8;
+	capacity->dynamicShapeCount = n + 64;
+	capacity->dynamicBodyCount = n + 64;
+	capacity->contactCount = b3MaxInt( 20000, n * 16 );
 }
 
 // A paddle on a motor churning a pile of small shapes inside a closed cylinder. The cylinder axis
@@ -1127,8 +1181,11 @@ void CreateSpinner( b3WorldId worldId )
 {
 	g_spinnerData = (SpinnerData){ 0 };
 
-	float radius = 12.0f;
-	float halfDepth = 1.0f;
+	int bodyCount = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 500 : 1500 );
+
+	float s = (float)bodyCount / 1500.0f;
+	float radius = 12.0f * ( s > 1.0f ? powf( s, 0.25f ) : 1.0f );
+	float halfDepth = 1.0f * ( s > 1.0f ? sqrtf( s ) : 1.0f );
 	float yCenter = radius;
 
 	b3BodyId groundId;
@@ -1178,8 +1235,6 @@ void CreateSpinner( b3WorldId worldId )
 	shapeDef.baseMaterial.friction = 0.1f;
 	shapeDef.baseMaterial.restitution = 0.1f;
 	shapeDef.density = 0.25f;
-
-	int bodyCount = BENCHMARK_DEBUG ? 500 : 1500;
 
 	// The grid starts low where the cylinder is narrow, so the span has to fit the chord there
 	float spacing = 0.55f;
@@ -1343,4 +1398,83 @@ void StepSleep( b3WorldId worldId, int stepCount )
 			break;
 		}
 	}
+}
+
+typedef struct
+{
+	Human* humans;
+	int humanCount;
+} RagdollPileData;
+
+static RagdollPileData g_ragdollPileData;
+
+void GetRagdollPileCapacity( b3Capacity* capacity )
+{
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 96 : 960 );
+	int humanCount = b3MaxInt( 1, n / 12 );
+	int totalBodies = humanCount * 12;
+
+	capacity->staticShapeCount = 16;
+	capacity->staticBodyCount = 16;
+	capacity->dynamicShapeCount = totalBodies + 64;
+	capacity->dynamicBodyCount = totalBodies + 64;
+	capacity->contactCount = b3MaxInt( 50 * 1024, totalBodies * 32 );
+}
+
+void CreateRagdollPile( b3WorldId worldId )
+{
+	g_ragdollPileData = (RagdollPileData){ 0 };
+
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 96 : 960 );
+	int humanCount = b3MaxInt( 1, n / 12 );
+
+	g_ragdollPileData.humanCount = humanCount;
+	g_ragdollPileData.humans = malloc( humanCount * sizeof( Human ) );
+	memset( g_ragdollPileData.humans, 0, humanCount * sizeof( Human ) );
+
+	float a = b3MaxFloat( 5.0f, 0.4f * sqrtf( (float)humanCount * 12.0f ) );
+	float groundExtent = b3MaxFloat( 50.0f, a * 3.0f );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.position = (b3Pos){ 0.0f, -1.0f, 0.0f };
+	b3BodyId groundId = b3CreateBody( worldId, &bodyDef );
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BoxHull box = b3MakeBoxHull( groundExtent, 1.0f, groundExtent );
+	g_groundShapeId = b3CreateHullShape( groundId, &shapeDef, &box.base );
+
+	unsigned int seed = 42;
+	for ( int i = 0; i < humanCount; ++i )
+	{
+		seed = seed * 1664525u + 1013904223u;
+		float rx = ( (float)( seed & 0xffff ) / 65535.0f - 0.5f ) * 2.0f * a;
+		seed = seed * 1664525u + 1013904223u;
+		float rz = ( (float)( seed & 0xffff ) / 65535.0f - 0.5f ) * 2.0f * a;
+
+		float ry = 3.0f + 2.5f * (float)( i % 10 ) + 0.2f * (float)( i / 10 );
+
+		b3Pos position = { rx, ry, rz };
+		float torque = 10.0f;
+		float hertz = 0.5f;
+		float damping = 0.7f;
+		int groupIndex = i + 1;
+		void* userData = NULL;
+		bool colorize = false;
+
+		CreateHuman( g_ragdollPileData.humans + i, worldId, position, torque, hertz, damping, groupIndex, userData, colorize );
+	}
+}
+
+void DestroyRagdollPile( void )
+{
+	if ( g_ragdollPileData.humans != NULL )
+	{
+		for ( int i = 0; i < g_ragdollPileData.humanCount; ++i )
+		{
+			DestroyHuman( g_ragdollPileData.humans + i );
+		}
+		free( g_ragdollPileData.humans );
+		g_ragdollPileData.humans = NULL;
+	}
+	g_ragdollPileData.humanCount = 0;
 }

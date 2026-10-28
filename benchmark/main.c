@@ -12,8 +12,8 @@
 #include "box3d/constants.h"
 #include "box3d/math_functions.h"
 
-// DBVH Integration: Include DBVH C API
-#include "../dbvh/dbvh_c_api.h"
+// SDBVH Integration: Include SDBVH C API
+#include "../sdbvh/sdbvh_c_api.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -52,7 +52,7 @@ typedef struct Benchmark
 	int totalStepCount;
 } Benchmark;
 
-// DBVH Integration: Per-frame metrics record structure
+// SDBVH Integration: Per-frame metrics record structure
 typedef struct StepRecord
 {
 	int frame;
@@ -188,7 +188,8 @@ int main( int argc, char** argv )
 		{ "junkyard", GetJunkyardCapacity, CreateJunkyard, NULL, StepJunkyard, 500 },
 		{ "large_pyramid", NULL, CreateLargePyramid, NULL, NULL, 200 },
 		{ "large_world", GetLargeWorldCapacity, CreateLargeWorld, NULL, StepLargeWorld, 500 },
-		{ "many_pyramids", NULL, CreateManyPyramids, NULL, NULL, 100 },
+		{ "many_pyramids", GetManyPyramidsCapacity, CreateManyPyramids, NULL, NULL, 100 },
+		{ "ragdoll_pile", GetRagdollPileCapacity, CreateRagdollPile, DestroyRagdollPile, NULL, 300 },
 		{ "rain", GetRainCapacity, CreateRain, DestroyRain, StepRain, 400 },
 		{ "sleep", GetSleepCapacity, CreateSleep, NULL, StepSleep, 300 },
 		{ "spinner", GetSpinnerCapacity, CreateSpinner, DestroySpinner, NULL, 800 },
@@ -241,18 +242,19 @@ int main( int argc, char** argv )
 	bool exportCsv = false;
 	const char* customCsvFile = NULL;
 
-	// DBVH Integration: CLI option variables
-	bool useDBVH = false;
-	bool dbvhEnableRebuild = true;
-	bool dbvhEnableFattening = true;
-	bool dbvhEnablePredictive = false;
-	bool dbvhEnableRotations = false;
-	int dbvhMetric = 0; // 0: AreaRatio, 1: SubtreeSAH
-	float dbvhThreshold = 1.80f;
-	int dbvhInterval = 30;
-	int dbvhBudget = 2;
-	bool dbvhEnableAdaptive = true;
-	int dbvhMaxSubtreeLeaves = 64;
+	// SDBVH Integration: CLI option variables
+	bool useSDBVH = false;
+	bool sdbvhEnableRebuild = true;
+	bool sdbvhEnableFattening = false;
+	bool sdbvhEnablePredictive = false;
+	bool sdbvhEnableRotations = false;
+	int sdbvhMetric = 0; // 0: AreaRatio, 1: SubtreeSAH
+	float sdbvhThreshold = 1.80f;
+	int sdbvhInterval = 30;
+	int sdbvhBudget = 2;
+	bool sdbvhEnableAdaptive = true;
+	int sdbvhMaxSubtreeLeaves = 1024;
+	int sdbvhPartitionAlgo = 0; // 0: Binned SAH, 1: Median Split
 	bool customThresholdSet = false;
 	bool groundTruthMode = false;
 
@@ -349,114 +351,151 @@ int main( int argc, char** argv )
 		}
 		else if ( ( value = MatchValue( arg, "-bp=", "--broadphase=" ) ) != NULL )
 		{
-			if ( EqualsIgnoreCase( value, "dbvh" ) )
+			if ( EqualsIgnoreCase( value, "sdbvh" ) || EqualsIgnoreCase( value, "dbvh" ) )
 			{
-				useDBVH = true;
+				useSDBVH = true;
 			}
 			else
 			{
-				useDBVH = false;
+				useSDBVH = false;
 			}
 		}
 		else if ( ( strcmp( arg, "-bp" ) == 0 || strcmp( arg, "--broadphase" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			useDBVH = EqualsIgnoreCase( nextArg, "dbvh" );
+			useSDBVH = ( EqualsIgnoreCase( nextArg, "sdbvh" ) || EqualsIgnoreCase( nextArg, "dbvh" ) );
 		}
 		else if ( ( value = MatchValue( arg, "-m=", "--metric=" ) ) != NULL )
 		{
 			if ( EqualsIgnoreCase( value, "subtree_sah" ) || EqualsIgnoreCase( value, "sah" ) || strcmp( value, "1" ) == 0 )
 			{
-				dbvhMetric = 1;
+				sdbvhMetric = 1;
 			}
 			else
 			{
-				dbvhMetric = 0;
+				sdbvhMetric = 0;
 			}
 		}
 		else if ( ( strcmp( arg, "-m" ) == 0 || strcmp( arg, "--metric" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			dbvhMetric = ( EqualsIgnoreCase( nextArg, "subtree_sah" ) || EqualsIgnoreCase( nextArg, "sah" ) || strcmp( nextArg, "1" ) == 0 ) ? 1 : 0;
+			sdbvhMetric = ( EqualsIgnoreCase( nextArg, "subtree_sah" ) || EqualsIgnoreCase( nextArg, "sah" ) ||
+							strcmp( nextArg, "1" ) == 0 )
+							  ? 1
+							  : 0;
 		}
 		else if ( ( value = MatchValue( arg, "-th=", "--threshold=" ) ) != NULL )
 		{
-			dbvhThreshold = (float)atof( value );
+			sdbvhThreshold = (float)atof( value );
 			customThresholdSet = true;
 		}
 		else if ( ( strcmp( arg, "-th" ) == 0 || strcmp( arg, "--threshold" ) == 0 ) && i + 1 < argc )
 		{
-			dbvhThreshold = (float)atof( argv[++i] );
+			sdbvhThreshold = (float)atof( argv[++i] );
 			customThresholdSet = true;
 		}
 		else if ( ( value = MatchValue( arg, "-ri=", "--rebuild-interval=" ) ) != NULL )
 		{
-			dbvhInterval = b3ClampInt( atoi( value ), 1, 10000 );
+			sdbvhInterval = b3ClampInt( atoi( value ), 1, 10000 );
 		}
 		else if ( ( strcmp( arg, "-ri" ) == 0 || strcmp( arg, "--rebuild-interval" ) == 0 ) && i + 1 < argc )
 		{
-			dbvhInterval = b3ClampInt( atoi( argv[++i] ), 1, 10000 );
+			sdbvhInterval = b3ClampInt( atoi( argv[++i] ), 1, 10000 );
 		}
 		else if ( ( value = MatchValue( arg, "-rb=", "--rebuild-budget=" ) ) != NULL )
 		{
-			dbvhBudget = b3ClampInt( atoi( value ), 1, 1000 );
+			sdbvhBudget = b3ClampInt( atoi( value ), 1, 1000 );
 		}
 		else if ( ( strcmp( arg, "-rb" ) == 0 || strcmp( arg, "--rebuild-budget" ) == 0 ) && i + 1 < argc )
 		{
-			dbvhBudget = b3ClampInt( atoi( argv[++i] ), 1, 1000 );
+			sdbvhBudget = b3ClampInt( atoi( argv[++i] ), 1, 1000 );
 		}
 		else if ( ( value = MatchValue( arg, "--rebuild=", "--rebuild=" ) ) != NULL )
 		{
-			dbvhEnableRebuild = ( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
+			sdbvhEnableRebuild =
+				( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
 		}
 		else if ( ( strcmp( arg, "--rebuild" ) == 0 || strcmp( arg, "-rebuild" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			dbvhEnableRebuild = ( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
+			sdbvhEnableRebuild =
+				( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
 		}
 		else if ( ( value = MatchValue( arg, "--fattening=", "--fattening=" ) ) != NULL )
 		{
-			dbvhEnableFattening = ( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
+			sdbvhEnableFattening =
+				( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
 		}
 		else if ( ( strcmp( arg, "--fattening" ) == 0 || strcmp( arg, "-fattening" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			dbvhEnableFattening = ( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
+			sdbvhEnableFattening =
+				( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
 		}
 		else if ( ( value = MatchValue( arg, "--predictive=", "--predictive=" ) ) != NULL )
 		{
-			dbvhEnablePredictive = ( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
+			sdbvhEnablePredictive =
+				( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
 		}
 		else if ( ( strcmp( arg, "--predictive" ) == 0 || strcmp( arg, "-predictive" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			dbvhEnablePredictive = ( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
+			sdbvhEnablePredictive =
+				( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
 		}
 		else if ( ( value = MatchValue( arg, "--rotations=", "--rotations=" ) ) != NULL )
 		{
-			dbvhEnableRotations = ( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
+			sdbvhEnableRotations =
+				( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
 		}
 		else if ( ( strcmp( arg, "--rotations" ) == 0 || strcmp( arg, "-rotations" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			dbvhEnableRotations = ( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
+			sdbvhEnableRotations =
+				( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
 		}
 		else if ( ( value = MatchValue( arg, "--adaptive=", "--adaptive-rebuild=" ) ) != NULL )
 		{
-			dbvhEnableAdaptive = ( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
+			sdbvhEnableAdaptive =
+				( EqualsIgnoreCase( value, "on" ) || strcmp( value, "1" ) == 0 || EqualsIgnoreCase( value, "true" ) );
 		}
 		else if ( ( strcmp( arg, "--adaptive" ) == 0 || strcmp( arg, "-ar" ) == 0 ) && i + 1 < argc )
 		{
 			const char* nextArg = argv[++i];
-			dbvhEnableAdaptive = ( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
+			sdbvhEnableAdaptive =
+				( EqualsIgnoreCase( nextArg, "on" ) || strcmp( nextArg, "1" ) == 0 || EqualsIgnoreCase( nextArg, "true" ) );
 		}
 		else if ( ( value = MatchValue( arg, "--max-subtree-leaves=", "-msl=" ) ) != NULL )
 		{
-			dbvhMaxSubtreeLeaves = b3ClampInt( atoi( value ), 1, 100000 );
+			sdbvhMaxSubtreeLeaves = b3ClampInt( atoi( value ), 1, 100000 );
 		}
 		else if ( ( strcmp( arg, "--max-subtree-leaves" ) == 0 || strcmp( arg, "-msl" ) == 0 ) && i + 1 < argc )
 		{
-			dbvhMaxSubtreeLeaves = b3ClampInt( atoi( argv[++i] ), 1, 100000 );
+			sdbvhMaxSubtreeLeaves = b3ClampInt( atoi( argv[++i] ), 1, 100000 );
+		}
+		else if ( ( value = MatchValue( arg, "-p=", "--partition=" ) ) != NULL )
+		{
+			if ( EqualsIgnoreCase( value, "median_split" ) || EqualsIgnoreCase( value, "median" ) || strcmp( value, "1" ) == 0 )
+			{
+				sdbvhPartitionAlgo = 1;
+			}
+			else
+			{
+				sdbvhPartitionAlgo = 0;
+			}
+		}
+		else if ( ( strcmp( arg, "-p" ) == 0 || strcmp( arg, "--partition" ) == 0 ) && i + 1 < argc )
+		{
+			const char* nextArg = argv[++i];
+			if ( EqualsIgnoreCase( nextArg, "median_split" ) || EqualsIgnoreCase( nextArg, "median" ) ||
+				 strcmp( nextArg, "1" ) == 0 )
+			{
+				sdbvhPartitionAlgo = 1;
+			}
+			else
+			{
+				sdbvhPartitionAlgo = 0;
+			}
 		}
 		else if ( strcmp( arg, "-gt" ) == 0 || strcmp( arg, "--ground-truth" ) == 0 )
 		{
@@ -499,8 +538,9 @@ int main( int argc, char** argv )
 					"  -w, --workers=<int>          Fixed worker count\n"
 					"  -r, --repeats=<int>          Number of benchmark repeats (default: 4)\n"
 					"  --steps=<int>                Override step count per benchmark\n"
-					"  -bp, --broadphase=native|dbvh Select broadphase implementation\n"
-					"  -m, --metric=area_ratio|subtree_sah Degradation metric for DBVH rebuild\n"
+					"  -bp, --broadphase=native|sdbvh Select broadphase implementation (aliases: dbvh)\n"
+					"  -p, --partition=sah|median   Partition algorithm for SDBVH rebuild (default: sah)\n"
+					"  -m, --metric=area_ratio|subtree_sah Degradation metric for SDBVH rebuild\n"
 					"  -th, --threshold=<float>     Rebuild threshold value\n"
 					"  --rebuild=on|off             Enable/disable incremental subtree rebuild\n"
 					"  --fattening=on|off           Enable/disable AABB fattening\n"
@@ -523,7 +563,7 @@ int main( int argc, char** argv )
 
 	if ( !customThresholdSet )
 	{
-		dbvhThreshold = ( dbvhMetric == 0 ) ? 1.50f : 0.40f;
+		sdbvhThreshold = ( sdbvhMetric == 0 ) ? 1.50f : 0.40f;
 	}
 
 	if ( singleWorkerCount != -1 )
@@ -540,20 +580,15 @@ int main( int argc, char** argv )
 	}
 
 	printf( "Starting benchmarks\n" );
-	printf( "Broadphase: %s\n", useDBVH ? "DBVH (Custom)" : "Native (b3DynamicTree)" );
-	if ( useDBVH )
+	printf( "Broadphase: %s\n", useSDBVH ? "SDBVH (Stable DBVH)" : "Native (b3DynamicTree)" );
+	if ( useSDBVH )
 	{
-		printf( "DBVH Config: rebuild=%s, adaptive=%s, max_leaves=%d, metric=%s, threshold=%.2f, interval=%d, budget=%d, fattening=%s, predictive=%s, rotations=%s\n",
-				dbvhEnableRebuild ? "on" : "off",
-				dbvhEnableAdaptive ? "on" : "off",
-				dbvhMaxSubtreeLeaves,
-				dbvhMetric == 0 ? "AreaRatio" : "SubtreeSAH",
-				dbvhThreshold,
-				dbvhInterval,
-				dbvhBudget,
-				dbvhEnableFattening ? "on" : "off",
-				dbvhEnablePredictive ? "on" : "off",
-				dbvhEnableRotations ? "on" : "off" );
+		printf( "SDBVH Config: rebuild=%s, adaptive=%s, partition=%s, max_leaves=%d, metric=%s, threshold=%.2f, interval=%d, "
+				"budget=%d, fattening=%s, predictive=%s, rotations=%s\n",
+				sdbvhEnableRebuild ? "on" : "off", sdbvhEnableAdaptive ? "on" : "off",
+				sdbvhPartitionAlgo == 0 ? "BinnedSAH" : "MedianSplit", sdbvhMaxSubtreeLeaves,
+				sdbvhMetric == 0 ? "AreaRatio" : "SubtreeSAH", sdbvhThreshold, sdbvhInterval, sdbvhBudget,
+				sdbvhEnableFattening ? "on" : "off", sdbvhEnablePredictive ? "on" : "off", sdbvhEnableRotations ? "on" : "off" );
 	}
 	if ( groundTruthMode )
 	{
@@ -602,8 +637,8 @@ int main( int argc, char** argv )
 				b3WorldDef worldDef = b3DefaultWorldDef();
 				worldDef.enableContinuous = enableContinuous;
 				worldDef.workerCount = threadCount;
-				// DBVH Integration: Pass useDBVH to world definition
-				worldDef.useDBVH = useDBVH;
+				// SDBVH Integration: Pass useSDBVH to world definition
+				worldDef.useSDBVH = useSDBVH;
 
 				if ( benchmark->capacityFcn != NULL )
 				{
@@ -612,29 +647,29 @@ int main( int argc, char** argv )
 
 				b3WorldId worldId = b3CreateWorld( &worldDef );
 
-				// DBVH Integration: Configure runtime DBVH parameters
-				if ( useDBVH )
+				// SDBVH Integration: Configure runtime DBVH parameters
+				if ( useSDBVH )
 				{
-					dbvh_config_t dbvhCfg;
-					dbvhCfg.enableRebuild = dbvhEnableRebuild;
-					dbvhCfg.enableFattening = dbvhEnableFattening;
-					dbvhCfg.enablePredictive = dbvhEnablePredictive;
-					dbvhCfg.enableRotations = dbvhEnableRotations;
-					dbvhCfg.degradationMetric = (dbvh_degradation_metric_t)dbvhMetric;
-					dbvhCfg.rebuildThreshold = dbvhThreshold;
-					dbvhCfg.areaRatioThreshold = (dbvhMetric == 0) ? dbvhThreshold : 1.80f;
-					dbvhCfg.subtreeSAHThreshold = (dbvhMetric == 1) ? dbvhThreshold : 1.80f;
-					dbvhCfg.rebuildInterval = dbvhInterval;
-					dbvhCfg.maxRebuildsPerFrame = dbvhBudget;
-					dbvhCfg.enableAdaptiveRebuild = dbvhEnableAdaptive;
-					dbvhCfg.maxSubtreeLeaves = dbvhMaxSubtreeLeaves;
-					b3World_SetDBVHConfig( worldId, &dbvhCfg );
+					sdbvh_config_t sdbvhCfg;
+					sdbvhCfg.enableRebuild = sdbvhEnableRebuild;
+					sdbvhCfg.enableFattening = sdbvhEnableFattening;
+					sdbvhCfg.enablePredictive = sdbvhEnablePredictive;
+					sdbvhCfg.enableRotations = sdbvhEnableRotations;
+					sdbvhCfg.degradationMetric = (sdbvh_degradation_metric_t)sdbvhMetric;
+					sdbvhCfg.areaRatioThreshold = ( sdbvhMetric == 0 ) ? sdbvhThreshold : 1.80f;
+					sdbvhCfg.subtreeSAHThreshold = ( sdbvhMetric == 1 ) ? sdbvhThreshold : 1.80f;
+					sdbvhCfg.rebuildInterval = sdbvhInterval;
+					sdbvhCfg.maxRebuildsPerFrame = sdbvhBudget;
+					sdbvhCfg.enableAdaptiveRebuild = sdbvhEnableAdaptive;
+					sdbvhCfg.maxSubtreeLeaves = sdbvhMaxSubtreeLeaves;
+					sdbvhCfg.partitionAlgorithm = (sdbvh_partition_algorithm_t)sdbvhPartitionAlgo;
+					b3World_SetSDBVHConfig( worldId, &sdbvhCfg );
 				}
 
 				benchmark->createFcn( worldId );
 
 				// DBVH initial build via Binned SAH buckets before simulation loop
-				if ( useDBVH )
+				if ( useSDBVH )
 				{
 					b3World_RebuildBroadPhase( worldId );
 				}
@@ -656,7 +691,8 @@ int main( int argc, char** argv )
 				MinProfile( profiles + 0, &profile );
 
 				b3Counters cnt0 = b3World_GetCounters( worldId );
-				b3BroadPhaseQualityMetrics qm0 = b3World_GetBroadPhaseQualityMetrics( worldId, b3_dynamicBody, groundTruthMode, 1.0f, 1.0f );
+				b3BroadPhaseQualityMetrics qm0 =
+					b3World_GetBroadPhaseQualityMetrics( worldId, b3_dynamicBody, groundTruthMode, 1.0f, 1.0f );
 				if ( runIndex == 0 )
 				{
 					stepRecords[0].frame = 0;
@@ -694,7 +730,8 @@ int main( int argc, char** argv )
 					if ( runIndex == 0 )
 					{
 						b3Counters cnt = b3World_GetCounters( worldId );
-						b3BroadPhaseQualityMetrics qm = b3World_GetBroadPhaseQualityMetrics( worldId, b3_dynamicBody, groundTruthMode, 1.0f, 1.0f );
+						b3BroadPhaseQualityMetrics qm =
+							b3World_GetBroadPhaseQualityMetrics( worldId, b3_dynamicBody, groundTruthMode, 1.0f, 1.0f );
 						stepRecords[stepIndex].frame = stepIndex;
 						stepRecords[stepIndex].stepTime = profile.step;
 						stepRecords[stepIndex].pairsTime = profile.pairs;
@@ -758,25 +795,24 @@ int main( int argc, char** argv )
 				}
 				else
 				{
-					const char* bpName = useDBVH ? "dbvh" : "native";
-					snprintf( csvFileName, sizeof( csvFileName ), "benchmark_results/benchmark_%s_%s_t%d.csv", benchmark->name, bpName, threadCount );
+					const char* bpName = useSDBVH ? "sdbvh" : "native";
+					snprintf( csvFileName, sizeof( csvFileName ), "benchmark_results/benchmark_%s_%s_t%d.csv", benchmark->name,
+							  bpName, threadCount );
 				}
 
 				FILE* csvFile = fopen( csvFileName, "w" );
 				if ( csvFile != NULL )
 				{
-					fprintf( csvFile, "frame,step_ms,pairs_ms,collide_ms,solve_ms,contact_count,tree_height,leaf_count,node_count,sah_standard,sah_normalized,ideal_sah_standard,ideal_sah_normalized,ideal_tree_height,quality_ratio_standard,quality_ratio_normalized\n" );
+					fprintf( csvFile, "frame,step_ms,pairs_ms,collide_ms,solve_ms,contact_count,tree_height,leaf_count,node_"
+									  "count,sah_standard,sah_normalized,ideal_sah_standard,ideal_sah_normalized,ideal_tree_"
+									  "height,quality_ratio_standard,quality_ratio_normalized\n" );
 					for ( int s = 0; s < stepCount; ++s )
 					{
 						StepRecord* r = stepRecords + s;
-						fprintf( csvFile, "%d,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f\n",
-								 r->frame, r->stepTime, r->pairsTime, r->collideTime, r->solveTime,
-								 r->contactCount,
-								 r->treeHeight, r->leafCount, r->nodeCount,
-								 r->sahStandard, r->sahNormalized,
-								 r->idealSahStandard, r->idealSahNormalized,
-								 r->idealTreeHeight,
-								 r->qualityRatioStandard, r->qualityRatioNormalized );
+						fprintf( csvFile, "%d,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f\n", r->frame,
+								 r->stepTime, r->pairsTime, r->collideTime, r->solveTime, r->contactCount, r->treeHeight,
+								 r->leafCount, r->nodeCount, r->sahStandard, r->sahNormalized, r->idealSahStandard,
+								 r->idealSahNormalized, r->idealTreeHeight, r->qualityRatioStandard, r->qualityRatioNormalized );
 					}
 					fclose( csvFile );
 					printf( "    -> Exported CSV metrics to: %s\n", csvFileName );
@@ -793,16 +829,16 @@ int main( int argc, char** argv )
 					for ( int stepIndex = 0; stepIndex < stepCount; ++stepIndex )
 					{
 						b3Profile p = profiles[stepIndex];
-						fprintf( file, "%g %g %g %g %g %g %g\n", p.step, p.pairs, p.collide, p.constraints, p.transforms,
-								 p.refit, p.sleepIslands );
+						fprintf( file, "%g %g %g %g %g %g %g\n", p.step, p.pairs, p.collide, p.constraints, p.transforms, p.refit,
+								 p.sleepIslands );
 					}
 					fclose( file );
 				}
 			}
 		}
 
-		printf( "  Objects: body=%d, shape=%d, contact=%d, joint=%d, tree_height=%d\n",
-				counters.bodyCount, counters.shapeCount, counters.contactCount, counters.jointCount, counters.treeHeight );
+		printf( "  Objects: body=%d, shape=%d, contact=%d, joint=%d, tree_height=%d\n", counters.bodyCount, counters.shapeCount,
+				counters.contactCount, counters.jointCount, counters.treeHeight );
 	}
 
 	printf( "\n======================================\n" );
