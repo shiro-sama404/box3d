@@ -14,7 +14,13 @@ CMakeUserPresets.json
 *.zip
 
 *.exe
+*.dat
 test_dbvh
 test_native
 test_plots/
 relatorios_tcc/
+
+__pycache__/
+*.py[cod]
+
+local/*

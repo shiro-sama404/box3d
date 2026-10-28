@@ -17,6 +17,9 @@ DEFAULT_SCALES = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Executa benchmarks em escala de atores variáveis (128 a 16384 corpos).")
+    parser.add_argument("--scene", "-b", default="convex_pile",
+                        choices=["convex_pile", "many_pyramids", "spinner", "junkyard", "ragdoll_pile"],
+                        help="Cena de benchmark a executar (padrão: convex_pile)")
     parser.add_argument("--actors", nargs="+", type=int, default=DEFAULT_SCALES,
                         help="Lista de contagens de atores a testar (padrão: 128 256 512 1024 2048 4096 8192 16384)")
     parser.add_argument("--steps", type=int, default=500,
@@ -352,21 +355,21 @@ def main():
         print(f"\n==================== ESCALA: {actors} ATORES ====================")
         res_entry = {"actors": actors}
 
-        # 1. Native
+        # Box3D
         if not args.skip_native:
-            csv_nat = os.path.join(args.output_dir, f"scale_{actors}_native.csv")
+            csv_nat = os.path.join(args.output_dir, f"scale_{args.scene}_{actors}_native.csv")
             ok, _ = run_single_test(
-                args.exe, "convex_pile", actors, args.steps, args.repeats, args.workers,
+                args.exe, args.scene, actors, args.steps, args.repeats, args.workers,
                 "native", "area_ratio", args.threshold, args.adaptive, args.max_leaves, csv_nat
             )
             if ok:
                 res_entry["native"] = parse_csv_metrics(csv_nat)
 
-        # 2. DBVH
+        # SDBVH
         if not args.skip_dbvh:
-            csv_dbvh = os.path.join(args.output_dir, f"scale_{actors}_dbvh_{args.metric}.csv")
+            csv_dbvh = os.path.join(args.output_dir, f"scale_{args.scene}_{actors}_dbvh_{args.metric}.csv")
             ok, _ = run_single_test(
-                args.exe, "convex_pile", actors, args.steps, args.repeats, args.workers,
+                args.exe, args.scene, actors, args.steps, args.repeats, args.workers,
                 "dbvh", args.metric, args.threshold, args.adaptive, args.max_leaves, csv_dbvh
             )
             if ok:
@@ -375,7 +378,7 @@ def main():
         summary_results.append(res_entry)
 
     # Export Summary CSV
-    summary_csv = os.path.join(args.output_dir, "scale_sweep_summary.csv")
+    summary_csv = os.path.join(args.output_dir, f"scale_sweep_{args.scene}_summary.csv")
     with open(summary_csv, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -404,7 +407,7 @@ def main():
     print(f"\n>> Resumo consolidado salvo em: {summary_csv}")
 
     # Generate HTML Dashboard
-    html_file = os.path.join(args.output_dir, "scale_report_dashboard.html")
+    html_file = os.path.join(args.output_dir, f"scale_report_{args.scene}_dashboard.html")
     generate_html_report(summary_results, html_file)
 
     # Print summary table
