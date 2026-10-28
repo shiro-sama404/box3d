@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Interativo - Estratégia B (TCC Box3D vs DBVH)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-card: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-green: #34d399;
+            --accent-red: #f87171;
+            --border: #334155;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: var(--bg-primary); color: var(--text-main); padding: 25px; line-height: 1.5; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 2rem; color: var(--accent); margin-bottom: 8px; }
+        .header p { color: var(--text-muted); font-size: 1.05rem; }
+        
+        .kpi-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-bottom: 30px; }
+        .kpi-card { background: var(--bg-card); padding: 20px; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
+        .kpi-card h3 { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; letter-spacing: 0.5px; }
+        .kpi-card .value { font-size: 1.8rem; font-weight: 700; color: var(--accent-green); }
+        .kpi-card .sub { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; }
+
+        .controls { background: var(--bg-card); padding: 18px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 25px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between; }
+        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn { background: #334155; color: var(--text-main); border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+        .btn:hover { background: #475569; }
+        .btn.active { background: var(--accent); color: #0f172a; }
+
+        .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 25px; margin-bottom: 30px; }
+        .chart-card { background: var(--bg-card); padding: 22px; border-radius: 12px; border: 1px solid var(--border); }
+        .chart-card h2 { font-size: 1.15rem; margin-bottom: 15px; color: var(--accent); }
+
+        .table-card { background: var(--bg-card); padding: 22px; border-radius: 12px; border: 1px solid var(--border); overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.95rem; }
+        th, td { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+        th { background: #0f172a; color: var(--accent); font-weight: 600; text-transform: uppercase; font-size: 0.8rem; }
+        tr:hover { background: rgba(56, 189, 248, 0.05); }
+        .badge { padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; }
+        .badge-native { background: rgba(248, 113, 113, 0.2); color: var(--accent-red); }
+        .badge-dbvh { background: rgba(52, 211, 153, 0.2); color: var(--accent-green); }
+        .badge-best { background: rgba(56, 189, 248, 0.25); color: var(--accent); border: 1px solid var(--accent); }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>Dashboard Científico - Estratégia B</h1>
+        <p>Validação de Larga Escala: Box3D Nativo (b3DynamicTree) vs DBVH Adaptativa (Binned SAH)</p>
+    </div>
+
+    <div class="kpi-container">
+        <div class="kpi-card">
+            <h3>Speedup Broad-Phase (Pura)</h3>
+            <div class="value">18.8x</div>
+            <div class="sub">100 a 10.000 corpos isolados</div>
+        </div>
+        <div class="kpi-card">
+            <h3>Speedup Física Completa</h3>
+            <div class="value">1.87x</div>
+            <div class="sub">Em N = 10.000 (-613 ms/frame)</div>
+        </div>
+        <div class="kpi-card">
+            <h3>Controle de Degeneração</h3>
+            <div class="value">H = 16 vs 47</div>
+            <div class="sub">DBVH compacta vs Colapso Nativo</div>
+        </div>
+        <div class="kpi-card">
+            <h3>Capacidade Extrema TLAS</h3>
+            <div class="value">1.000.000</div>
+            <div class="sub">Corpos em 1.37s com 122 MB RAM</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div style="font-weight: 600;">Selecione a Escala de Corpos (Frente 1):</div>
+        <div class="btn-group" id="scaleButtons"></div>
+    </div>
+
+    <div class="charts-grid">
+        <div class="chart-card">
+            <h2>Comparação da Grade DBVH vs Nativo (<span id="scaleTitle">N=10.000</span>)</h2>
+            <canvas id="barChart" height="280"></canvas>
+        </div>
+        <div class="chart-card">
+            <h2>Tempo de Estreitamento (Narrow-Phase Collide) vs Degeneração</h2>
+            <canvas id="collideChart" height="280"></canvas>
+        </div>
+    </div>
+
+    <div class="table-card">
+        <h2 style="font-size: 1.15rem; margin-bottom: 15px; color: var(--accent);">Tabela Detalhada de Resultados da Escala Selecionada</h2>
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th>Configuração</th>
+                    <th>Threshold</th>
+                    <th>Ramos Rebuild</th>
+                    <th>Step Time</th>
+                    <th>Pairs (Broad)</th>
+                    <th>Collide (Narrow)</th>
+                    <th>Altura Árvore</th>
+                    <th>Speedup vs Nativo</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <script>
+        const rawData = {"grid_data": [{"scale": 10, "broadphase": "native", "threshold": null, "rebuilds": null, "step_ms": 0.1246, "pairs_ms": 0.0005, "collide_ms": 0.0154, "solve_ms": 0.1083, "contacts": 22.2, "tree_height": 4, "sah_norm": 4.4842}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 2, "step_ms": 0.1255, "pairs_ms": 0.0074, "collide_ms": 0.0107, "solve_ms": 0.1072, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 4, "step_ms": 0.1254, "pairs_ms": 0.0074, "collide_ms": 0.0105, "solve_ms": 0.1071, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 6, "step_ms": 0.1256, "pairs_ms": 0.0074, "collide_ms": 0.0105, "solve_ms": 0.1074, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 2, "step_ms": 0.1255, "pairs_ms": 0.0074, "collide_ms": 0.0106, "solve_ms": 0.1072, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 4, "step_ms": 0.1257, "pairs_ms": 0.0074, "collide_ms": 0.0106, "solve_ms": 0.1074, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 6, "step_ms": 0.1343, "pairs_ms": 0.0085, "collide_ms": 0.0109, "solve_ms": 0.1146, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 2, "step_ms": 0.1284, "pairs_ms": 0.0081, "collide_ms": 0.011, "solve_ms": 0.109, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 4, "step_ms": 0.1257, "pairs_ms": 0.0074, "collide_ms": 0.0107, "solve_ms": 0.1073, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 10, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 6, "step_ms": 0.128, "pairs_ms": 0.0075, "collide_ms": 0.0108, "solve_ms": 0.1094, "contacts": 10.2, "tree_height": 4, "sah_norm": 4.4537}, {"scale": 100, "broadphase": "native", "threshold": null, "rebuilds": null, "step_ms": 3.1272, "pairs_ms": 0.0701, "collide_ms": 1.563, "solve_ms": 1.4937, "contacts": 451.3, "tree_height": 16, "sah_norm": 15.1747}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 2, "step_ms": 1.5373, "pairs_ms": 0.1882, "collide_ms": 0.2027, "solve_ms": 1.1461, "contacts": 122.1, "tree_height": 8, "sah_norm": 18.1787}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 4, "step_ms": 1.514, "pairs_ms": 0.1853, "collide_ms": 0.1996, "solve_ms": 1.1288, "contacts": 122.1, "tree_height": 8, "sah_norm": 18.1787}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 6, "step_ms": 1.5245, "pairs_ms": 0.1871, "collide_ms": 0.2013, "solve_ms": 1.1357, "contacts": 122.1, "tree_height": 8, "sah_norm": 18.1787}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 2, "step_ms": 1.5357, "pairs_ms": 0.1885, "collide_ms": 0.2086, "solve_ms": 1.1383, "contacts": 119.4, "tree_height": 8, "sah_norm": 18.6969}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 4, "step_ms": 1.5206, "pairs_ms": 0.188, "collide_ms": 0.1999, "solve_ms": 1.1323, "contacts": 119.4, "tree_height": 8, "sah_norm": 18.6969}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 6, "step_ms": 1.535, "pairs_ms": 0.19, "collide_ms": 0.2002, "solve_ms": 1.1445, "contacts": 119.4, "tree_height": 8, "sah_norm": 18.6969}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 2, "step_ms": 1.5475, "pairs_ms": 0.1934, "collide_ms": 0.2056, "solve_ms": 1.1482, "contacts": 118.6, "tree_height": 8, "sah_norm": 19.2229}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 4, "step_ms": 1.529, "pairs_ms": 0.1913, "collide_ms": 0.2, "solve_ms": 1.1374, "contacts": 118.6, "tree_height": 8, "sah_norm": 19.2229}, {"scale": 100, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 6, "step_ms": 1.5813, "pairs_ms": 0.1987, "collide_ms": 0.2085, "solve_ms": 1.1738, "contacts": 118.6, "tree_height": 8, "sah_norm": 19.2229}, {"scale": 500, "broadphase": "native", "threshold": null, "rebuilds": null, "step_ms": 54.8245, "pairs_ms": 1.1822, "collide_ms": 40.5213, "solve_ms": 13.1202, "contacts": 4455.9, "tree_height": 21, "sah_norm": 24.6107}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 2, "step_ms": 28.237, "pairs_ms": 3.1093, "collide_ms": 18.5289, "solve_ms": 6.5983, "contacts": 791.7, "tree_height": 11, "sah_norm": 48.4377}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 4, "step_ms": 28.2832, "pairs_ms": 3.1239, "collide_ms": 18.53, "solve_ms": 6.6288, "contacts": 791.7, "tree_height": 11, "sah_norm": 48.4377}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 6, "step_ms": 28.412, "pairs_ms": 3.1316, "collide_ms": 18.643, "solve_ms": 6.6368, "contacts": 791.7, "tree_height": 11, "sah_norm": 48.4377}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 2, "step_ms": 28.4606, "pairs_ms": 3.2067, "collide_ms": 18.5988, "solve_ms": 6.6546, "contacts": 791.3, "tree_height": 11, "sah_norm": 48.4269}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 4, "step_ms": 28.214, "pairs_ms": 3.1541, "collide_ms": 18.4915, "solve_ms": 6.5679, "contacts": 791.3, "tree_height": 11, "sah_norm": 48.4269}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 6, "step_ms": 28.4146, "pairs_ms": 3.1831, "collide_ms": 18.6333, "solve_ms": 6.5976, "contacts": 791.3, "tree_height": 11, "sah_norm": 48.4269}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 2, "step_ms": 28.5994, "pairs_ms": 3.289, "collide_ms": 18.6697, "solve_ms": 6.6402, "contacts": 791.2, "tree_height": 11, "sah_norm": 52.9433}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 4, "step_ms": 28.5717, "pairs_ms": 3.3038, "collide_ms": 18.6006, "solve_ms": 6.6667, "contacts": 791.2, "tree_height": 11, "sah_norm": 52.9433}, {"scale": 500, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 6, "step_ms": 28.4904, "pairs_ms": 3.2734, "collide_ms": 18.5925, "solve_ms": 6.6238, "contacts": 791.2, "tree_height": 11, "sah_norm": 52.9433}, {"scale": 1000, "broadphase": "native", "threshold": null, "rebuilds": null, "step_ms": 140.082, "pairs_ms": 2.9234, "collide_ms": 114.5094, "solve_ms": 22.6484, "contacts": 8365.2, "tree_height": 24, "sah_norm": 22.3274}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 2, "step_ms": 90.6668, "pairs_ms": 11.825, "collide_ms": 62.8798, "solve_ms": 15.9613, "contacts": 1508.5, "tree_height": 12, "sah_norm": 85.5755}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 4, "step_ms": 89.8481, "pairs_ms": 11.7386, "collide_ms": 62.2194, "solve_ms": 15.8893, "contacts": 1508.5, "tree_height": 12, "sah_norm": 85.5755}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 6, "step_ms": 88.969, "pairs_ms": 11.6844, "collide_ms": 61.4854, "solve_ms": 15.7984, "contacts": 1508.5, "tree_height": 12, "sah_norm": 85.5755}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 2, "step_ms": 89.7855, "pairs_ms": 11.9663, "collide_ms": 61.9491, "solve_ms": 15.8693, "contacts": 1508.9, "tree_height": 13, "sah_norm": 91.7569}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 4, "step_ms": 89.8055, "pairs_ms": 11.9265, "collide_ms": 62.0452, "solve_ms": 15.833, "contacts": 1508.9, "tree_height": 13, "sah_norm": 91.7569}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 6, "step_ms": 89.6571, "pairs_ms": 11.9557, "collide_ms": 61.8198, "solve_ms": 15.8807, "contacts": 1508.9, "tree_height": 13, "sah_norm": 91.7569}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 2, "step_ms": 89.474, "pairs_ms": 11.897, "collide_ms": 61.7916, "solve_ms": 15.7845, "contacts": 1508.9, "tree_height": 13, "sah_norm": 90.1456}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 4, "step_ms": 89.6992, "pairs_ms": 11.9851, "collide_ms": 61.7988, "solve_ms": 15.9144, "contacts": 1508.9, "tree_height": 13, "sah_norm": 90.1456}, {"scale": 1000, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 6, "step_ms": 92.0042, "pairs_ms": 12.388, "collide_ms": 63.2965, "solve_ms": 16.3188, "contacts": 1508.9, "tree_height": 13, "sah_norm": 90.1456}, {"scale": 10000, "broadphase": "native", "threshold": null, "rebuilds": null, "step_ms": 1315.8042, "pairs_ms": 42.1074, "collide_ms": 926.2495, "solve_ms": 347.4459, "contacts": 116682.3, "tree_height": 47, "sah_norm": 85.3045}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 2, "step_ms": 718.475, "pairs_ms": 111.7517, "collide_ms": 432.04, "solve_ms": 174.6821, "contacts": 13368.7, "tree_height": 16, "sah_norm": 132.6467}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 4, "step_ms": 711.7686, "pairs_ms": 109.771, "collide_ms": 430.1416, "solve_ms": 171.8548, "contacts": 13368.7, "tree_height": 16, "sah_norm": 132.6467}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.3, "rebuilds": 6, "step_ms": 711.6989, "pairs_ms": 110.7086, "collide_ms": 428.0094, "solve_ms": 172.9796, "contacts": 13368.7, "tree_height": 16, "sah_norm": 132.6467}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 2, "step_ms": 704.3266, "pairs_ms": 109.2812, "collide_ms": 424.2757, "solve_ms": 170.7685, "contacts": 13367.9, "tree_height": 16, "sah_norm": 133.2292}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 4, "step_ms": 713.4797, "pairs_ms": 110.9326, "collide_ms": 428.6206, "solve_ms": 173.9252, "contacts": 13367.9, "tree_height": 16, "sah_norm": 133.2292}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.5, "rebuilds": 6, "step_ms": 703.6559, "pairs_ms": 108.8434, "collide_ms": 425.9051, "solve_ms": 168.9062, "contacts": 13367.9, "tree_height": 16, "sah_norm": 133.2292}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 2, "step_ms": 705.3782, "pairs_ms": 109.5844, "collide_ms": 425.584, "solve_ms": 170.2085, "contacts": 13368.1, "tree_height": 16, "sah_norm": 133.6171}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 4, "step_ms": 702.9118, "pairs_ms": 108.9927, "collide_ms": 424.1718, "solve_ms": 169.746, "contacts": 13368.1, "tree_height": 16, "sah_norm": 133.6171}, {"scale": 10000, "broadphase": "dbvh", "threshold": 1.8, "rebuilds": 6, "step_ms": 703.5964, "pairs_ms": 109.3553, "collide_ms": 423.5245, "solve_ms": 170.7153, "contacts": 13368.1, "tree_height": 16, "sah_norm": 133.6171}], "pure_data": [{"engine": "Box3D Nativo", "actors": 10, "threshold": 0.0, "rebuilds": 0, "move_ms": 0.0149, "query_ms": 0.00342, "total_ms": 0.01974, "tree_height": 4, "memory_mb": 0.00621033}, {"engine": "DBVH", "actors": 10, "threshold": 1.3, "rebuilds": 2, "move_ms": 0.0012, "query_ms": 0.00044, "total_ms": 0.0017, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.3, "rebuilds": 4, "move_ms": 0.00092, "query_ms": 0.00022, "total_ms": 0.00122, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.3, "rebuilds": 6, "move_ms": 0.00086, "query_ms": 0.00022, "total_ms": 0.00118, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.5, "rebuilds": 2, "move_ms": 0.00082, "query_ms": 0.00018, "total_ms": 0.00108, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.5, "rebuilds": 4, "move_ms": 0.0008, "query_ms": 0.00018, "total_ms": 0.00104, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.5, "rebuilds": 6, "move_ms": 0.0008, "query_ms": 0.00022, "total_ms": 0.00112, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.8, "rebuilds": 2, "move_ms": 0.00076, "query_ms": 0.0002, "total_ms": 0.00102, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.8, "rebuilds": 4, "move_ms": 0.00076, "query_ms": 0.00018, "total_ms": 0.00098, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "DBVH", "actors": 10, "threshold": 1.8, "rebuilds": 6, "move_ms": 0.00078, "query_ms": 0.0002, "total_ms": 0.00102, "tree_height": 4, "memory_mb": 0.00115967}, {"engine": "Box3D Nativo", "actors": 100, "threshold": 0.0, "rebuilds": 0, "move_ms": 0.29338, "query_ms": 0.05846, "total_ms": 0.35778, "tree_height": 10, "memory_mb": 0.0137634}, {"engine": "DBVH", "actors": 100, "threshold": 1.3, "rebuilds": 2, "move_ms": 0.01688, "query_ms": 0.00324, "total_ms": 0.02168, "tree_height": 11, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.3, "rebuilds": 4, "move_ms": 0.01628, "query_ms": 0.00266, "total_ms": 0.02136, "tree_height": 10, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.3, "rebuilds": 6, "move_ms": 0.016, "query_ms": 0.00256, "total_ms": 0.0216, "tree_height": 10, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.5, "rebuilds": 2, "move_ms": 0.01578, "query_ms": 0.00222, "total_ms": 0.0192, "tree_height": 11, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.5, "rebuilds": 4, "move_ms": 0.01568, "query_ms": 0.00222, "total_ms": 0.01996, "tree_height": 11, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.5, "rebuilds": 6, "move_ms": 0.01558, "query_ms": 0.00224, "total_ms": 0.0201, "tree_height": 10, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.8, "rebuilds": 2, "move_ms": 0.01544, "query_ms": 0.00212, "total_ms": 0.01862, "tree_height": 11, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.8, "rebuilds": 4, "move_ms": 0.0154, "query_ms": 0.00212, "total_ms": 0.01908, "tree_height": 11, "memory_mb": 0.012146}, {"engine": "DBVH", "actors": 100, "threshold": 1.8, "rebuilds": 6, "move_ms": 0.01534, "query_ms": 0.00208, "total_ms": 0.01896, "tree_height": 11, "memory_mb": 0.012146}, {"engine": "Box3D Nativo", "actors": 500, "threshold": 0.0, "rebuilds": 0, "move_ms": 1.858, "query_ms": 0.39044, "total_ms": 2.30358, "tree_height": 13, "memory_mb": 0.0473328}, {"engine": "DBVH", "actors": 500, "threshold": 1.3, "rebuilds": 2, "move_ms": 0.1086, "query_ms": 0.0169, "total_ms": 0.12998, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.3, "rebuilds": 4, "move_ms": 0.10742, "query_ms": 0.01524, "total_ms": 0.12774, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.3, "rebuilds": 6, "move_ms": 0.10724, "query_ms": 0.01472, "total_ms": 0.1279, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.5, "rebuilds": 2, "move_ms": 0.10838, "query_ms": 0.01458, "total_ms": 0.12716, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.5, "rebuilds": 4, "move_ms": 0.10704, "query_ms": 0.01456, "total_ms": 0.12668, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.5, "rebuilds": 6, "move_ms": 0.10824, "query_ms": 0.0146, "total_ms": 0.12834, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.8, "rebuilds": 2, "move_ms": 0.1069, "query_ms": 0.01448, "total_ms": 0.12554, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.8, "rebuilds": 4, "move_ms": 0.10824, "query_ms": 0.01444, "total_ms": 0.12776, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "DBVH", "actors": 500, "threshold": 1.8, "rebuilds": 6, "move_ms": 0.10704, "query_ms": 0.0145, "total_ms": 0.127, "tree_height": 12, "memory_mb": 0.0609741}, {"engine": "Box3D Nativo", "actors": 1000, "threshold": 0.0, "rebuilds": 0, "move_ms": 3.99674, "query_ms": 0.85492, "total_ms": 4.9886, "tree_height": 13, "memory_mb": 0.0892944}, {"engine": "DBVH", "actors": 1000, "threshold": 1.3, "rebuilds": 2, "move_ms": 0.24056, "query_ms": 0.03458, "total_ms": 0.28232, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.3, "rebuilds": 4, "move_ms": 0.23956, "query_ms": 0.03318, "total_ms": 0.2801, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.3, "rebuilds": 6, "move_ms": 0.24028, "query_ms": 0.03304, "total_ms": 0.28082, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.5, "rebuilds": 2, "move_ms": 0.23778, "query_ms": 0.03272, "total_ms": 0.2776, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.5, "rebuilds": 4, "move_ms": 0.23924, "query_ms": 0.03274, "total_ms": 0.27952, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.5, "rebuilds": 6, "move_ms": 0.24498, "query_ms": 0.03294, "total_ms": 0.28602, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.8, "rebuilds": 2, "move_ms": 0.23958, "query_ms": 0.03272, "total_ms": 0.27924, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.8, "rebuilds": 4, "move_ms": 0.23792, "query_ms": 0.03264, "total_ms": 0.2781, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "DBVH", "actors": 1000, "threshold": 1.8, "rebuilds": 6, "move_ms": 0.23798, "query_ms": 0.03272, "total_ms": 0.27878, "tree_height": 14, "memory_mb": 0.122009}, {"engine": "Box3D Nativo", "actors": 10000, "threshold": 0.0, "rebuilds": 0, "move_ms": 52.9888, "query_ms": 11.5242, "total_ms": 65.8947, "tree_height": 18, "memory_mb": 0.844604}, {"engine": "DBVH", "actors": 10000, "threshold": 1.3, "rebuilds": 2, "move_ms": 3.29852, "query_ms": 0.57122, "total_ms": 3.95188, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.3, "rebuilds": 4, "move_ms": 3.23504, "query_ms": 0.5443, "total_ms": 3.86538, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.3, "rebuilds": 6, "move_ms": 3.22692, "query_ms": 0.544, "total_ms": 3.8541, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.5, "rebuilds": 2, "move_ms": 3.31032, "query_ms": 0.62094, "total_ms": 4.01502, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.5, "rebuilds": 4, "move_ms": 3.31282, "query_ms": 0.5597, "total_ms": 3.95444, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.5, "rebuilds": 6, "move_ms": 3.27596, "query_ms": 0.5653, "total_ms": 3.92318, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.8, "rebuilds": 2, "move_ms": 5.06804, "query_ms": 0.72846, "total_ms": 5.9246, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.8, "rebuilds": 4, "move_ms": 4.52132, "query_ms": 0.85736, "total_ms": 5.5115, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "DBVH", "actors": 10000, "threshold": 1.8, "rebuilds": 6, "move_ms": 3.47952, "query_ms": 0.64896, "total_ms": 4.21146, "tree_height": 18, "memory_mb": 1.22064}, {"engine": "Box3D Nativo", "actors": 100000, "threshold": 0.0, "rebuilds": 0, "move_ms": 678.373, "query_ms": 165.769, "total_ms": 860.78, "tree_height": 26, "memory_mb": 8.39771}, {"engine": "DBVH", "actors": 100000, "threshold": 1.3, "rebuilds": 2, "move_ms": 55.3808, "query_ms": 16.0099, "total_ms": 73.6975, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.3, "rebuilds": 4, "move_ms": 58.4714, "query_ms": 17.2351, "total_ms": 78.0613, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.3, "rebuilds": 6, "move_ms": 56.1881, "query_ms": 16.7762, "total_ms": 75.3085, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.5, "rebuilds": 2, "move_ms": 58.0226, "query_ms": 16.286, "total_ms": 76.5914, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.5, "rebuilds": 4, "move_ms": 55.9096, "query_ms": 16.5982, "total_ms": 74.9055, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.5, "rebuilds": 6, "move_ms": 55.7348, "query_ms": 16.2456, "total_ms": 74.4375, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.8, "rebuilds": 2, "move_ms": 55.5566, "query_ms": 16.189, "total_ms": 74.1518, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.8, "rebuilds": 4, "move_ms": 55.6561, "query_ms": 16.438, "total_ms": 74.6293, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 100000, "threshold": 1.8, "rebuilds": 6, "move_ms": 55.8445, "query_ms": 16.6528, "total_ms": 74.9347, "tree_height": 22, "memory_mb": 12.207}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.3, "rebuilds": 2, "move_ms": 1034.62, "query_ms": 353.071, "total_ms": 1419.58, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.3, "rebuilds": 4, "move_ms": 1076.54, "query_ms": 364.538, "total_ms": 1476.56, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.3, "rebuilds": 6, "move_ms": 1010.52, "query_ms": 351.233, "total_ms": 1395.04, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.5, "rebuilds": 2, "move_ms": 1005.47, "query_ms": 352.295, "total_ms": 1390.54, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.5, "rebuilds": 4, "move_ms": 1064.28, "query_ms": 357.397, "total_ms": 1456.0, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.5, "rebuilds": 6, "move_ms": 1022.98, "query_ms": 349.218, "total_ms": 1404.22, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.8, "rebuilds": 2, "move_ms": 1014.85, "query_ms": 352.767, "total_ms": 1400.32, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.8, "rebuilds": 4, "move_ms": 1005.15, "query_ms": 348.985, "total_ms": 1386.27, "tree_height": 27, "memory_mb": 122.07}, {"engine": "DBVH", "actors": 1000000, "threshold": 1.8, "rebuilds": 6, "move_ms": 993.513, "query_ms": 348.228, "total_ms": 1374.46, "tree_height": 27, "memory_mb": 122.07}], "scales": [10, 100, 500, 1000, 10000]};
+        let currentScale = 10000;
+        let barChartInstance = null;
+        let collideChartInstance = null;
+
+        function init() {
+            const btnGroup = document.getElementById("scaleButtons");
+            rawData.scales.forEach(s => {
+                const btn = document.createElement("button");
+                btn.className = "btn " + (s === currentScale ? "active" : "");
+                btn.innerText = "N = " + s.toLocaleString();
+                btn.onclick = () => {
+                    document.querySelectorAll(".btn-group .btn").forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                    currentScale = s;
+                    updateDashboard();
+                };
+                btnGroup.appendChild(btn);
+            });
+            updateDashboard();
+        }
+
+        function updateDashboard() {
+            document.getElementById("scaleTitle").innerText = "N = " + currentScale.toLocaleString() + " Corpos";
+            const scaleData = rawData.grid_data.filter(r => r.scale === currentScale);
+            const native = scaleData.find(r => r.broadphase === "native");
+            const nativeStep = native ? native.step_ms : 1.0;
+            const nativeCollide = native ? native.collide_ms : 1.0;
+
+            const labels = [];
+            const stepTimes = [];
+            const collideTimes = [];
+            const colors = [];
+
+            // Adiciona nativo
+            if (native) {
+                labels.push("Nativo");
+                stepTimes.push(native.step_ms);
+                collideTimes.push(native.collide_ms);
+                colors.push("#f87171");
+            }
+
+            scaleData.filter(r => r.broadphase === "dbvh").forEach(d => {
+                labels.push(`th=${d.threshold}, rb=${d.rebuilds}`);
+                stepTimes.push(d.step_ms);
+                collideTimes.push(d.collide_ms);
+                colors.push("#38bdf8");
+            });
+
+            // 1. Gráfico de Barras: Step Time
+            if (barChartInstance) barChartInstance.destroy();
+            const ctx1 = document.getElementById('barChart').getContext('2d');
+            barChartInstance = new Chart(ctx1, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Step Time Médio (ms)',
+                        data: stepTimes,
+                        backgroundColor: colors,
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                    }
+                }
+            });
+
+            // 2. Gráfico de Barras: Collide Time
+            if (collideChartInstance) collideChartInstance.destroy();
+            const ctx2 = document.getElementById('collideChart').getContext('2d');
+            collideChartInstance = new Chart(ctx2, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Narrow Collide Time (ms)',
+                        data: collideTimes,
+                        backgroundColor: colors.map(c => c === "#f87171" ? "#ef4444" : "#34d399"),
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                    }
+                }
+            });
+
+            // 3. Atualiza Tabela
+            const tbody = document.querySelector("#dataTable tbody");
+            tbody.innerHTML = "";
+            
+            // Encontra melhor DBVH
+            const dbvhRows = scaleData.filter(r => r.broadphase === "dbvh");
+            const bestDbvh = dbvhRows.reduce((min, r) => r.step_ms < min.step_ms ? r : min, dbvhRows[0]);
+
+            scaleData.forEach(r => {
+                const isNative = r.broadphase === "native";
+                const isBest = r === bestDbvh;
+                const sp = nativeStep / r.step_ms;
+                
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                    <td>
+                        <span class="badge ${isNative ? 'badge-native' : isBest ? 'badge-best' : 'badge-dbvh'}">
+                            ${isNative ? 'Box3D Nativo' : isBest ? 'DBVH (Melhor Calibração)' : 'DBVH'}
+                        </span>
+                    </td>
+                    <td>${r.threshold ? r.threshold.toFixed(1) : '-'}</td>
+                    <td>${r.rebuilds ? r.rebuilds : '-'}</td>
+                    <td style="font-weight: 700; color: ${isBest ? '#38bdf8' : isNative ? '#f87171' : '#f8fafc'}">${r.step_ms.toFixed(2)} ms</td>
+                    <td>${r.pairs_ms.toFixed(4)} ms</td>
+                    <td>${r.collide_ms.toFixed(2)} ms</td>
+                    <td style="font-weight: 600;">H = ${r.tree_height}</td>
+                    <td style="font-weight: 700; color: ${sp >= 1.0 ? '#34d399' : '#f87171'}">${sp.toFixed(2)}x</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
