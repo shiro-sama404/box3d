@@ -1,9 +1,10 @@
 import csv
 
-for f in ['benchmark_results/results_native_final.csv',
-          'benchmark_results/results_dbvh_arearatio_final.csv',
-          'benchmark_results/results_dbvh_arearatio_convex_500.csv',
-          'benchmark_results/results_dbvh_arearatio_opt_500.csv']:
+base = 'benchmark_results/2026-09-28_heuristics_and_initial_scale'
+for f in [f'{base}/results_native_final.csv',
+          f'{base}/results_dbvh_arearatio_final.csv',
+          f'{base}/results_dbvh_arearatio_convex_500.csv',
+          f'{base}/results_dbvh_arearatio_opt_500.csv']:
     try:
         with open(f, 'r', encoding='utf-8') as fp:
             rows = list(csv.DictReader(fp))

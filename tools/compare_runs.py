@@ -1,7 +1,8 @@
 import csv
 
-f1 = 'benchmark_results/results_dbvh_arearatio_convex_500.csv'
-f2 = 'benchmark_results/results_dbvh_arearatio_final.csv'
+base = 'benchmark_results/2026-09-28_heuristics_and_initial_scale'
+f1 = f'{base}/results_dbvh_arearatio_convex_500.csv'
+f2 = f'{base}/results_dbvh_arearatio_final.csv'
 
 with open(f1, 'r', encoding='utf-8') as fp1, open(f2, 'r', encoding='utf-8') as fp2:
     r1 = list(csv.DictReader(fp1))

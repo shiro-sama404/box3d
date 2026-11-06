@@ -1,9 +1,9 @@
 import csv
 
 files = [
-    ('Native (Box3D)', 'benchmark_results/results_native_final.csv'),
-    ('DBVH (Area Ratio)', 'benchmark_results/results_dbvh_arearatio_final.csv'),
-    ('DBVH (Subtree SAH)', 'benchmark_results/results_dbvh_subtreesah_final.csv'),
+    ('Native (Box3D)', 'benchmark_results/2026-09-28_heuristics_and_initial_scale/results_native_final.csv'),
+    ('DBVH (Area Ratio)', 'benchmark_results/2026-09-28_heuristics_and_initial_scale/results_dbvh_arearatio_final.csv'),
+    ('DBVH (Subtree SAH)', 'benchmark_results/2026-09-28_heuristics_and_initial_scale/results_dbvh_subtreesah_final.csv'),
 ]
 
 for name, path in files:
