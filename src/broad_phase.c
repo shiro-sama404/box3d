@@ -23,6 +23,24 @@
 #include <string.h>
 
 
+static void b3SDBVHRebuildWorker( void* context )
+{
+	b3BroadPhase* bp = (b3BroadPhase*)context;
+	while ( true )
+	{
+		b3WaitSemaphore( bp->sdbvhRebuildStartSem );
+		if ( b3AtomicLoadInt( &bp->sdbvhRebuildShutdown ) != 0 )
+		{
+			break;
+		}
+
+		sdbvh_build_shadow( bp->sdbvhTree, bp->sdbvhShadowTree );
+
+		b3AtomicStoreInt( &bp->sdbvhRebuildReady, 1 );
+		b3SignalSemaphore( bp->sdbvhRebuildDoneSem );
+	}
+}
+
 void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useSDBVH )
 {
 	_Static_assert( b3_bodyTypeCount == 3, "must be three body types" );
@@ -38,7 +56,7 @@ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useS
 	int dynamicCapacity = b3MaxInt( 16, capacity->dynamicShapeCount );
 	bp->movedSiblings = NULL;
 
-	// SDBVH Integration: Setup DBVH lifecycle and default configuration if enabled
+	// SDBVH Integration: lifecycle and configuration
 	bp->useSDBVH = useSDBVH;
 	bp->sdbvhConfig.enableRebuild = true;
 	bp->sdbvhConfig.enableFattening = false;
@@ -53,36 +71,57 @@ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useS
 	bp->sdbvhConfig.maxSubtreeLeaves = 1024;
 	bp->sdbvhConfig.partitionAlgorithm = SDBVH_PARTITION_BINNED_SAH;
 
-	bp->currentRebuildInterval = bp->sdbvhConfig.rebuildInterval;
-	bp->currentMaxRebuilds = bp->sdbvhConfig.maxRebuildsPerFrame;
-	bp->adaptiveCooldownCounter = 0;
+	bp->currentRebuildInterval = ( bp->sdbvhConfig.rebuildInterval > 0 ) ? bp->sdbvhConfig.rebuildInterval : 30;
+	bp->microRebuildInterval = 16;
+	bp->microCooldownCounter = 16;
+	bp->microEnabled = true;
 	bp->dynamicMoved = true;
 
 	if ( useSDBVH )
 	{
 		bp->trees[b3_dynamicBody] = (b3DynamicTree){ 0 };
 		bp->sdbvhTree = sdbvh_create( dynamicCapacity );
+		bp->sdbvhShadowTree = sdbvh_create( dynamicCapacity );
 		sdbvh_set_config( bp->sdbvhTree, &bp->sdbvhConfig );
+		sdbvh_set_config( bp->sdbvhShadowTree, &bp->sdbvhConfig );
+
+		bp->sdbvhRebuildStartSem = b3CreateSemaphore( 0 );
+		bp->sdbvhRebuildDoneSem = b3CreateSemaphore( 0 );
+		b3AtomicStoreInt( &bp->sdbvhRebuildPending, 0 );
+		b3AtomicStoreInt( &bp->sdbvhRebuildReady, 0 );
+		b3AtomicStoreInt( &bp->sdbvhRebuildShutdown, 0 );
+		bp->sdbvhRebuildActive = false;
+		bp->sdbvhRebuildThread = b3CreateThread( &b3SDBVHRebuildWorker, bp, "sdbvh_rebuild" );
 	}
 	else
 	{
 		bp->trees[b3_dynamicBody] = b3DynamicTree_Create( dynamicCapacity );
 		bp->sdbvhTree = NULL;
+		bp->sdbvhShadowTree = NULL;
+		bp->sdbvhRebuildStartSem = NULL;
+		bp->sdbvhRebuildDoneSem = NULL;
+		bp->sdbvhRebuildThread = NULL;
+		bp->sdbvhRebuildActive = false;
 	}
 }
 
-// SDBVH Integration: Update DBVH runtime parameters
+// SDBVH Integration: Update runtime parameters
 void b3BroadPhase_SetConfig( b3BroadPhase* bp, const sdbvh_config_t* config )
 {
 	if ( config != NULL )
 	{
 		bp->sdbvhConfig = *config;
 		bp->currentRebuildInterval = config->rebuildInterval;
-		bp->currentMaxRebuilds = config->maxRebuildsPerFrame;
-		bp->adaptiveCooldownCounter = 0;
-		if ( bp->useSDBVH && bp->sdbvhTree != NULL )
+		if ( bp->useSDBVH )
 		{
-			sdbvh_set_config( bp->sdbvhTree, config );
+			if ( bp->sdbvhTree != NULL )
+			{
+				sdbvh_set_config( bp->sdbvhTree, config );
+			}
+			if ( bp->sdbvhShadowTree != NULL )
+			{
+				sdbvh_set_config( bp->sdbvhShadowTree, config );
+			}
 		}
 	}
 }
@@ -103,10 +142,34 @@ void b3DestroyBroadPhase( b3BroadPhase* bp )
 	}
 
 	b3DestroySet( &bp->pairSet );
-	// SDBVH Integration: Cleanup DBVH C++ instance
+	// SDBVH Integration: Cleanup C++ instance
 	if ( bp->useSDBVH )
 	{
+		if ( bp->sdbvhRebuildThread != NULL )
+		{
+			b3AtomicStoreInt( &bp->sdbvhRebuildShutdown, 1 );
+			b3SignalSemaphore( bp->sdbvhRebuildStartSem );
+			b3JoinThread( bp->sdbvhRebuildThread );
+			bp->sdbvhRebuildThread = NULL;
+		}
+
+		if ( bp->sdbvhRebuildStartSem != NULL )
+		{
+			b3DestroySemaphore( bp->sdbvhRebuildStartSem );
+			bp->sdbvhRebuildStartSem = NULL;
+		}
+
+		if ( bp->sdbvhRebuildDoneSem != NULL )
+		{
+			b3DestroySemaphore( bp->sdbvhRebuildDoneSem );
+			bp->sdbvhRebuildDoneSem = NULL;
+		}
+
 		sdbvh_destroy( bp->sdbvhTree );
+		if ( bp->sdbvhShadowTree != NULL )
+		{
+			sdbvh_destroy( bp->sdbvhShadowTree );
+		}
 	}
 
 	memset( bp, 0, sizeof( b3BroadPhase ) );
@@ -139,7 +202,7 @@ void b3BroadPhase_DestroyProxy( b3BroadPhase* bp, int proxyKey )
 	int proxyId = B3_PROXY_ID( proxyKey );
 
 	B3_ASSERT( 0 <= proxyType && proxyType < b3_bodyTypeCount );
-	// SDBVH Integration: Remove proxy from DBVH
+	// SDBVH Integration: Remove proxy
 	if ( bp->useSDBVH && proxyType == b3_dynamicBody )
 	{
 		bp->dynamicMoved = true;
@@ -169,7 +232,7 @@ void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb, b3Vec3
 	}
 }
 
-// SDBVH Integration: Enlarge/update proxy in DBVH or DynamicTree
+// SDBVH Integration: Enlarge/update proxy in SDBVH or DynamicTree
 void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
 {
 	b3BodyType typeIndex = B3_PROXY_TYPE( proxyKey );
@@ -191,7 +254,7 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
 	}
 }
 
-// SDBVH Integration: Trampoline callbacks adapting C++ DBVH query/raycast signatures to Box3D C callbacks
+// SDBVH Integration: Callbacks adapting C++ SDBVH query/raycast signatures to Box3D C callbacks
 typedef struct b3SDBVHTrampolineContext
 {
 	b3TreeQueryCallbackFcn* queryCallback;
@@ -212,7 +275,7 @@ static float b3SDBVHRayCastTrampoline( int32_t leafIndex, int32_t userData, void
 	return ctx->rayCastCallback( ctx->rayInput, (int)leafIndex, (uint64_t)userData, ctx->userContext );
 }
 
-// SDBVH Integration: Route AABB queries to DBVH when targeting dynamic body tree
+// SDBVH Integration: Route AABB queries to SDBVH when targeting dynamic body tree
 b3TreeStats b3BroadPhase_Query( const b3BroadPhase* bp, b3BodyType type, b3AABB aabb, uint64_t maskBits, bool requireAllBits,
 								b3TreeQueryCallbackFcn* callback, void* context )
 {
@@ -231,7 +294,7 @@ b3TreeStats b3BroadPhase_Query( const b3BroadPhase* bp, b3BodyType type, b3AABB 
 	}
 }
 
-// SDBVH Integration: Route raycasts to DBVH when targeting dynamic body tree
+// SDBVH Integration: Route raycasts to SDBVH when targeting dynamic body tree
 b3TreeStats b3BroadPhase_RayCast( const b3BroadPhase* bp, b3BodyType type, const b3RayCastInput* input, uint64_t maskBits,
 								  bool requireAllBits, b3TreeRayCastCallbackFcn* callback, void* context )
 {
@@ -797,39 +860,30 @@ static void b3UpdateTreesTask( void* context )
 	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
 
 	b3World* world = (b3World*)context;
-	// SDBVH Integration: Trigger periodic degradation-based rebuild every N frames with amortized budget
+	// SDBVH Integration: Periodic degradation-based rebuild every N frames
 	if ( world->broadPhase.useSDBVH )
 	{
 		b3BroadPhase* bp = &world->broadPhase;
-		if ( bp->sdbvhConfig.enableRebuild )
+		if ( bp->sdbvhRebuildActive )
 		{
-			int interval = bp->sdbvhConfig.enableAdaptiveRebuild ? bp->currentRebuildInterval : bp->sdbvhConfig.rebuildInterval;
-			if ( interval <= 1 || ( world->stepIndex % (uint64_t)interval ) == 0 )
-			{
-				int maxRebuilds = 2;
-				int maxLeaves = bp->sdbvhConfig.maxSubtreeLeaves > 0 ? bp->sdbvhConfig.maxSubtreeLeaves : 64;
-				float threshold = ( bp->sdbvhConfig.degradationMetric == SDBVH_METRIC_AREA_RATIO )
-									  ? bp->sdbvhConfig.areaRatioThreshold
-									  : bp->sdbvhConfig.subtreeSAHThreshold;
-				int rebuiltCount = sdbvh_rebuild_degraded_adaptive( bp->sdbvhTree, threshold, bp->sdbvhConfig.degradationMetric,
-																	maxRebuilds, maxLeaves );
+			b3WaitSemaphore( bp->sdbvhRebuildDoneSem );
+			bp->sdbvhRebuildActive = false;
+			b3AtomicStoreInt( &bp->sdbvhRebuildPending, 0 );
+			b3AtomicStoreInt( &bp->sdbvhRebuildReady, 0 );
 
-				if ( bp->sdbvhConfig.enableAdaptiveRebuild )
-				{
-					bp->currentMaxRebuilds = 2;
-					if ( rebuiltCount < 2 )
-					{
-						// Caso menos de 2 ramos sejam reconstruídos, aumenta o intervalo para 60
-						bp->currentRebuildInterval = 60;
-					}
-					else
-					{
-						bp->currentRebuildInterval =
-							( bp->sdbvhConfig.rebuildInterval > 0 ) ? bp->sdbvhConfig.rebuildInterval : 30;
-					}
-				}
+			void* temp = bp->sdbvhTree;
+			bp->sdbvhTree = bp->sdbvhShadowTree;
+			bp->sdbvhShadowTree = temp;
+
+			if ( bp->sdbvhConfig.enableAdaptiveRebuild )
+			{
+				bp->currentRebuildInterval = ( bp->sdbvhConfig.rebuildInterval > 0 ) ? bp->sdbvhConfig.rebuildInterval : 30;
+				bp->microCooldownCounter = bp->microRebuildInterval;
 			}
 		}
+
+		sdbvh_clear_moved( bp->sdbvhTree );
+		bp->dynamicMoved = false;
 	}
 	else
 	{
@@ -844,6 +898,50 @@ static void b3UpdateTreesTask( void* context )
 // - rebuild the collision tree for dynamic and kinematic bodies to keep their query performance good
 static void b3EnqueueTreeUpdate( b3World* world )
 {
+	b3BroadPhase* bp = &world->broadPhase;
+	if ( bp->useSDBVH && bp->sdbvhConfig.enableRebuild && bp->sdbvhTree != NULL && bp->sdbvhRebuildThread != NULL )
+	{
+		if ( bp->dynamicMoved )
+		{
+			int macroInterval = bp->sdbvhConfig.enableAdaptiveRebuild ? bp->currentRebuildInterval : bp->sdbvhConfig.rebuildInterval;
+			bool isMacroFrame = ( macroInterval <= 1 || ( world->stepIndex % (uint64_t)macroInterval ) == 0 );
+			bool shouldRebuild = false;
+
+			if ( isMacroFrame )
+			{
+				shouldRebuild = true;
+			}
+			else if ( bp->sdbvhConfig.enableAdaptiveRebuild && bp->microEnabled )
+			{
+				bp->microCooldownCounter -= 1;
+				if ( bp->microCooldownCounter <= 0 )
+				{
+					float alpha = sdbvh_get_degradation_alpha( bp->sdbvhTree );
+					float microThreshold = bp->sdbvhConfig.areaRatioThreshold > 0.0f ? bp->sdbvhConfig.areaRatioThreshold : 1.80f;
+					if ( alpha > microThreshold )
+					{
+						shouldRebuild = true;
+						bp->microRebuildInterval = bp->microRebuildInterval > 1 ? ( bp->microRebuildInterval >> 1 ) : 1;
+						bp->microCooldownCounter = bp->microRebuildInterval;
+					}
+					else
+					{
+						bp->microRebuildInterval = bp->microRebuildInterval < 16 ? ( bp->microRebuildInterval << 1 ) : 16;
+						bp->microCooldownCounter = bp->microRebuildInterval;
+					}
+				}
+			}
+
+			if ( shouldRebuild && b3AtomicLoadInt( &bp->sdbvhRebuildPending ) == 0 )
+			{
+				b3AtomicStoreInt( &bp->sdbvhRebuildReady, 0 );
+				b3AtomicStoreInt( &bp->sdbvhRebuildPending, 1 );
+				bp->sdbvhRebuildActive = true;
+				b3SignalSemaphore( bp->sdbvhRebuildStartSem );
+			}
+		}
+	}
+
 	if ( world->taskCount < B3_MAX_TASKS )
 	{
 		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
@@ -960,66 +1058,88 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			.checkCompounds = world->compoundShapeCount > 0,
 		};
 
-		// Static and Kinematic shapes against DBVH
-		int shapeCount = world->shapes.count;
-		for ( int i = 0; i < shapeCount; ++i )
+		// SDBVH Integration: query moved dynamic subtrees for static shapes, and the full dynamic tree for kinematic shapes.
+		bool staticMoved = b3HasTreeMoved( bp->trees + b3_staticBody );
+		const b3DynamicTree* staticTree = bp->trees + b3_staticBody;
+		if ( ( bp->dynamicMoved || staticMoved ) && staticTree->proxyCount > 0 )
 		{
-			b3Shape* shape = b3Array_Get( world->shapes, i );
-			if ( shape->id == B3_NULL_INDEX )
+			int found = 0;
+			for ( int p = 0; p < staticTree->proxyCapacity && found < staticTree->proxyCount; ++p )
 			{
-				continue;
+				if ( staticTree->proxies[p].node != B3_NULL_INDEX )
+				{
+					++found;
+					int shapeId = (int)staticTree->proxies[p].userData;
+					b3Shape* shape = b3Array_Get( world->shapes, shapeId );
+					float aabbArr[6] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z,
+										 shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
+					b3SDBVHCrossContext crossCtx = {
+						.world = world,
+						.pairContext = &pairContext,
+						.otherShapeId = shape->id,
+					};
+					if ( staticMoved )
+					{
+						sdbvh_query_aabb_mask( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback,
+											   &crossCtx );
+					}
+					else
+					{
+						sdbvh_query_aabb_mask_moved( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback,
+													 &crossCtx );
+					}
+				}
 			}
-			b3BodyType proxyType = (b3BodyType)B3_PROXY_TYPE( shape->proxyKey );
-			if ( proxyType == b3_staticBody )
+		}
+
+		const b3DynamicTree* kinematicTree = bp->trees + b3_kinematicBody;
+		if ( kinematicTree->proxyCount > 0 )
+		{
+			int found = 0;
+			for ( int p = 0; p < kinematicTree->proxyCapacity && found < kinematicTree->proxyCount; ++p )
 			{
-				float aabbArr[6] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z,
-									 shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
-				b3SDBVHCrossContext crossCtx = {
-					.world = world,
-					.pairContext = &pairContext,
-					.otherShapeId = shape->id,
-				};
-				sdbvh_query_aabb_mask_moved( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback,
-											 &crossCtx );
-			}
-			else if ( proxyType == b3_kinematicBody )
-			{
-				float aabbArr[6] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z,
-									 shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
-				b3SDBVHCrossContext crossCtx = {
-					.world = world,
-					.pairContext = &pairContext,
-					.otherShapeId = shape->id,
-				};
-				sdbvh_query_aabb_mask( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback, &crossCtx );
+				if ( kinematicTree->proxies[p].node != B3_NULL_INDEX )
+				{
+					++found;
+					int shapeId = (int)kinematicTree->proxies[p].userData;
+					b3Shape* shape = b3Array_Get( world->shapes, shapeId );
+					float aabbArr[6] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z,
+										 shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
+					b3SDBVHCrossContext crossCtx = {
+						.world = world,
+						.pairContext = &pairContext,
+						.otherShapeId = shape->id,
+					};
+					sdbvh_query_aabb_mask( bp->sdbvhTree, aabbArr, shape->filter.maskBits, b3SDBVHCrossQueryCallback, &crossCtx );
+				}
 			}
 		}
 
 		b3FlushCandidatePairs( &pairContext );
 
 		// Self-pairs with moved-node pruning (Batched & Task-parallelized)
-		if ( world->workerCount > 1 )
+		if ( bp->dynamicMoved )
 		{
-			sdbvh_seed_t seeds[64];
-			int seedCount = sdbvh_gather_seeds( bp->sdbvhTree, seeds, 64 );
-			if ( seedCount > 0 )
+			if ( world->workerCount > 1 )
 			{
-				b3SDBVHTaskContext taskCtx = {
-					.world = world,
-					.tree = bp->sdbvhTree,
-					.seeds = seeds,
-				};
-				b3ParallelFor( world, &b3SDBVHSelfPairsTask, seedCount, 1, &taskCtx, "sdbvh self pairs" );
+				sdbvh_seed_t seeds[64];
+				int seedCount = sdbvh_gather_seeds( bp->sdbvhTree, seeds, 64 );
+				if ( seedCount > 0 )
+				{
+					b3SDBVHTaskContext taskCtx = {
+						.world = world,
+						.tree = bp->sdbvhTree,
+						.seeds = seeds,
+					};
+					b3ParallelFor( world, &b3SDBVHSelfPairsTask, seedCount, 1, &taskCtx, "sdbvh self pairs" );
+				}
+			}
+			else
+			{
+				sdbvh_query_pairs_batched( bp->sdbvhTree, b3SDBVHSelfPairsBatchCallback, &pairContext );
+				b3FlushCandidatePairs( &pairContext );
 			}
 		}
-		else
-		{
-			sdbvh_query_pairs_batched( bp->sdbvhTree, b3SDBVHSelfPairsBatchCallback, &pairContext );
-			b3FlushCandidatePairs( &pairContext );
-		}
-
-		sdbvh_clear_moved( bp->sdbvhTree );
-		bp->dynamicMoved = false;
 	}
 	else
 	{
@@ -1171,7 +1291,7 @@ int b3BroadPhase_GetShapeIndex( b3BroadPhase* bp, int proxyKey )
 	int typeIndex = B3_PROXY_TYPE( proxyKey );
 	int proxyId = B3_PROXY_ID( proxyKey );
 
-	// SDBVH Integration: Get user data (shapeIndex) from DBVH for dynamic body
+	// SDBVH Integration: Get user data (shapeIndex) from SDBVH for dynamic body
 	if ( bp->useSDBVH && typeIndex == b3_dynamicBody )
 	{
 		return (int)sdbvh_get_user_data( bp->sdbvhTree, proxyId );
@@ -1184,7 +1304,7 @@ int b3BroadPhase_GetShapeIndex( b3BroadPhase* bp, int proxyKey )
 
 void b3ValidateBroadPhase( const b3BroadPhase* bp )
 {
-	// SDBVH Integration: Validate native dynamic tree only when not using DBVH
+	// SDBVH Integration: Validate native dynamic tree when not using SDBVH
 	if ( !bp->useSDBVH )
 	{
 		b3DynamicTree_Validate( bp->trees + b3_dynamicBody );
@@ -1199,7 +1319,7 @@ void b3ValidateNoMoved( const b3BroadPhase* bp )
 #if B3_ENABLE_VALIDATION == 1
 	for ( int j = 0; j < b3_bodyTypeCount; ++j )
 	{
-		// SDBVH Integration: Skip native dynamic tree validation when using DBVH
+		// SDBVH Integration: Skip native dynamic tree validation when using SDBVH
 		if ( bp->useSDBVH && j == b3_dynamicBody )
 		{
 			continue;
@@ -1212,7 +1332,6 @@ void b3ValidateNoMoved( const b3BroadPhase* bp )
 #endif
 }
 
-// SDBVH Integration: Compute broadphase quality metrics and ground truth ideal comparison
 void b3BroadPhase_GetQualityMetrics( const b3BroadPhase* bp, b3BodyType bodyType, bool computeIdeal, float traversalCost,
 									 float isectCost, b3BroadPhaseQualityMetrics* outMetrics )
 {

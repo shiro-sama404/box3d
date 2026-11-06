@@ -3,13 +3,13 @@
 
 #pragma once
 
+#include "core.h"
 #include "dynamic_tree.h"
 #include "table.h"
 
 #include "box3d/collision.h"
 #include "box3d/types.h"
 
-// SDBVH Integration: Include C API interface for SDBVH
 #include "../sdbvh/sdbvh_c_api.h"
 
 typedef struct b3Shape b3Shape;
@@ -36,14 +36,23 @@ typedef struct b3BroadPhase
 	// todo pairSet can grow quite large on the first time step and remain large
 	b3HashSet pairSet;
 
-	// SDBVH Integration: Pointer to SDBVH instance, active flag, dirty flag, and runtime configuration
+	// SDBVH data
 	bool useSDBVH;
 	bool dynamicMoved;
 	void* sdbvhTree;
+	void* sdbvhShadowTree;
+	b3Thread* sdbvhRebuildThread;
+	b3Semaphore* sdbvhRebuildStartSem;
+	b3Semaphore* sdbvhRebuildDoneSem;
+	b3AtomicInt sdbvhRebuildPending;
+	b3AtomicInt sdbvhRebuildReady;
+	b3AtomicInt sdbvhRebuildShutdown;
+	bool sdbvhRebuildActive;
 	sdbvh_config_t sdbvhConfig;
 	int currentRebuildInterval;
-	int currentMaxRebuilds;
-	int adaptiveCooldownCounter;
+	int microRebuildInterval;
+	int microCooldownCounter;
+	bool microEnabled;
 } b3BroadPhase;
 
 void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useSDBVH );
