@@ -35,7 +35,7 @@ void sdbvh_get_aabb(sdbvh_tree_t* tree, int32_t leafIndex, float aabb[6]);
 typedef void (*sdbvh_pairs_callback_t)(int32_t shapeIdA, int32_t shapeIdB, void* context);
 void sdbvh_query_pairs(sdbvh_tree_t* tree, sdbvh_pairs_callback_t callback, void* context);
 
-// Estruturas e callbacks para emissão em lote e paralelismo por tarefas
+// Estruturas de pares e seeds para paralelismo por tasks
 typedef struct sdbvh_pair_t {
     int32_t shapeIdA;
     int32_t shapeIdB;
@@ -49,21 +49,21 @@ typedef struct sdbvh_seed_t {
 typedef void (*sdbvh_pairs_batch_callback_t)(const sdbvh_pair_t* pairs, int count, void* context);
 void sdbvh_query_pairs_batched(sdbvh_tree_t* tree, sdbvh_pairs_batch_callback_t callback, void* context);
 
-// Geração e execução de sementes para tarefas em paralelo (b3ParallelFor)
+// Geração e consulta de seeds para travessia paralela por tasks
 int32_t sdbvh_gather_seeds(sdbvh_tree_t* tree, sdbvh_seed_t* seeds, int32_t maxSeeds);
 void sdbvh_query_seed_batched(sdbvh_tree_t* tree, const sdbvh_seed_t* seed, sdbvh_pairs_batch_callback_t callback, void* context);
 
-// Callback de consulta de AABB
+// Callbacks AABB query
 typedef bool (*sdbvh_query_aabb_callback_t)(int32_t leafIndex, int32_t userData, void* context);
 void sdbvh_query_aabb(sdbvh_tree_t* tree, const float aabb[6], sdbvh_query_aabb_callback_t callback, void* context);
 void sdbvh_query_aabb_mask(sdbvh_tree_t* tree, const float aabb[6], uint64_t maskBits, sdbvh_query_aabb_callback_t callback, void* context);
 void sdbvh_query_aabb_mask_moved(sdbvh_tree_t* tree, const float aabb[6], uint64_t maskBits, sdbvh_query_aabb_callback_t callback, void* context);
 
-// Manutenção de flags de movimento
+// Flags de movimento
 void sdbvh_clear_moved(sdbvh_tree_t* tree);
 void sdbvh_mark_moved(sdbvh_tree_t* tree, int32_t proxyId);
 
-// Callback Raycast
+// Callback raycast
 typedef float (*sdbvh_ray_cast_callback_t)(int32_t leafIndex, int32_t userData, void* context);
 void sdbvh_ray_cast(sdbvh_tree_t* tree, const float translation[3], const float p1[3], float maxFraction, sdbvh_ray_cast_callback_t callback, void* context);
 
@@ -96,11 +96,12 @@ typedef struct sdbvh_config_t {
 
 void sdbvh_set_config(sdbvh_tree_t* tree, const sdbvh_config_t* config);
 
-// Operações de Reconstrução Adaptativa
+// Rebuild
 void sdbvh_rebuild(sdbvh_tree_t* tree);
 int32_t sdbvh_rebuild_degraded_adaptive(sdbvh_tree_t* tree, float threshold, sdbvh_degradation_metric_t metric, int32_t maxRebuilds, int32_t maxSubtreeLeaves);
+void sdbvh_build_shadow(sdbvh_tree_t* sourceTree, sdbvh_tree_t* shadowTree);
 
-// Diagnósticos e métricas de qualidade SAH
+// Diagnósticos e Métricas SAH
 int32_t sdbvh_get_height(const sdbvh_tree_t* tree);
 float sdbvh_get_degradation_alpha(const sdbvh_tree_t* tree);
 float sdbvh_get_total_tree_area(const sdbvh_tree_t* tree);

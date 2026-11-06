@@ -16,6 +16,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace sdbvh
 {
 
@@ -27,6 +31,7 @@ static constexpr int32_t NULL_NODE = -1;
 
 using NodeIndex = int32_t;
 using LeafPair = std::pair<size_t, size_t>;
+static constexpr float EPSILON = 1e-7f;
 
 /// @brief Algoritmos de particionamento para rebuild.
 enum class PartitionAlgorithm : uint8_t
@@ -117,7 +122,7 @@ struct FixedStack
 // Traits — Configuração de tipos geométricos
 // ============================================================================
 
-/// @brief Traits padrão que mapeia para os tipos dbvh::AABB e dbvh::Vec3.
+/// @brief Traits que mapeia para os tipos sdbvh::AABB e sdbvh::Vec3.
 struct DefaultBVHTraits
 {
     using AABBType = AABB;
@@ -175,7 +180,7 @@ struct DefaultBVHTraits
 // ============================================================================
 
 /// @brief Nó da árvore: folha ou interno.
-/// @tparam T Tipo do dado de usuário (apenas folhas).
+/// @tparam T Tipo do dado de usuário.
 /// @tparam AABBType Tipo do bounding box (derivado dos Traits).
 template <typename T, typename AABBType = AABB>
 struct alignas(64) Node
@@ -186,9 +191,10 @@ struct alignas(64) Node
     T userData{};                                            //  4 bytes (apenas folhas)
     uint64_t categoryBits{0xFFFFFFFFFFFFFFFFull};            //  8 bytes (filtro de colisão)
     float constructionArea{0.0f};                            //  4 bytes
-    uint32_t leafCount{1};                                   //  4 bytes (Quantidade de folhas)
+    uint32_t leafCount{1};                                   //  4 bytes
     uint16_t flags{0};                                       //  2 bytes
-    uint8_t  pad[6]{0};                                      //  6 bytes
+    int16_t  height{0};                                      //  2 bytes
+    uint32_t padding{0};                                     //  4 bytes (preserves 64-byte alignment)
 
     static constexpr uint16_t NODE_FLAG_MOVED    = 0x01;
     static constexpr uint16_t NODE_FLAG_ENLARGED = 0x02;
@@ -202,6 +208,7 @@ struct alignas(64) Node
     void setEnlarged() noexcept { flags |= NODE_FLAG_ENLARGED; }
     void clearEnlarged() noexcept { flags &= static_cast<uint16_t>(~NODE_FLAG_ENLARGED); }
 };
+static_assert(sizeof(Node<int32_t>) == 64, "Node<int32_t> must be exactly 64 bytes");
 
 // ============================================================================
 // SDBVH – Stable Dynamic Bounding Volume Hierarchy
@@ -236,7 +243,7 @@ public:
     /// @return Índice da folha criada.
     [[nodiscard]] size_t insert(const AABBType& leafAABB, const T& userData, uint64_t categoryBits = 0xFFFFFFFFFFFFFFFFull);
 
-    /// @brief Define ou atualiza a máscara de bits de categoria de uma folha.
+    /// @brief Atualiza máscara de bits de categoria de uma folha.
     void setCategoryBits(size_t leafIndex, uint64_t categoryBits);
 
     /// @brief Remove uma folha da árvore.
@@ -256,16 +263,20 @@ public:
     // --- Consultas ---
 
     /// @brief Consulta todas as folhas cujo AABB sobrepõe queryAABB.
+    /// @tparam OnlyMoved Se verdadeiro, filtra ramos para nós marcados como movidos.
     /// @param queryAABB Caixa de consulta.
     /// @param callback Chamado com (leafIndex, userData) para cada folha sobreposta.
     ///        Deve retornar true para continuar ou false para interromper.
     /// @param maskBits Máscara de bits de categoria para filtragem antecipada.
-    template <typename F>
+    template <bool OnlyMoved = false, typename F>
     void query(const AABBType& queryAABB, F&& callback, uint64_t maskBits = 0xFFFFFFFFFFFFFFFFull) const;
 
     /// @brief Consulta folhas sobrepostas filtrando ramos com nós marcados como movidos.
     template <typename F>
-    void queryMaskMoved(const AABBType& queryAABB, F&& callback, uint64_t maskBits = 0xFFFFFFFFFFFFFFFFull) const;
+    void queryMaskMoved(const AABBType& queryAABB, F&& callback, uint64_t maskBits = 0xFFFFFFFFFFFFFFFFull) const
+    {
+        query<true>(queryAABB, std::forward<F>(callback), maskBits);
+    }
 
     /// @brief Marca um nó folha e propaga a flag de movimento até a raiz.
     void markProxyMoved(size_t leafIndex);
@@ -285,7 +296,7 @@ public:
     /// @return Vetor de pares (leafA, leafB) com leafA <= leafB.
     [[nodiscard]] std::vector<LeafPair> queryPairs() const;
 
-    /// @brief Versão com callback (evita alocação do vetor).
+    /// @brief Versão com callback.
     /// @param callback Função chamada para cada par (leafA, leafB).
     template <typename F>
     void queryPairs(F&& callback) const;
@@ -310,6 +321,8 @@ public:
     /// @return Número de candidatos a ramos degradados identificados.
     int rebuildDegraded(float threshold, DegradationMetric metric, int maxRebuilds = 2, int maxSubtreeLeaves = 64);
 
+    /// @brief Builds an ideal shadow tree from a source tree for asynchronous swap.
+    void buildShadowFrom(const SDBVH& source);
 
     // --- Configuração ---
 
@@ -332,7 +345,7 @@ public:
     [[nodiscard]] int getHeight() const;
 
     // --- Avaliação de Qualidade e Métricas SAH ---
-    
+
     [[nodiscard]] TreeQualityMetrics computeQualityMetrics(float traversalCost = 1.0f, float isectCost = 1.0f) const;
     [[nodiscard]] TreeQualityMetrics computeIdealQualityMetrics(float traversalCost = 1.0f, float isectCost = 1.0f) const;
     static TreeQualityMetrics computeIdealFromAABBs(const std::vector<AABBType>& leafAABBs, float traversalCost = 1.0f, float isectCost = 1.0f);
@@ -343,15 +356,18 @@ private:
     NodeIndex root{NULL_NODE};
     SDBVHConfig config;
     float totalTreeArea{0.0f};
+    float constructionTotalArea{0.0f};
     size_t leafCount{0};
 
     int computeSubtreeHeight(NodeIndex nodeIdx) const;
 
     // --- Gerenciamento de memória ---
+
     size_t allocateNode();
     void freeNode(size_t idx);
 
     // --- Manutenção da árvore ---
+
     void detachLeaf(size_t leafIndex);
     void reinsertLeaf(size_t leafIndex);
     void refitAndRotateAncestors(NodeIndex startNode);                       // Refit + rotação em passada única
@@ -359,8 +375,13 @@ private:
     [[nodiscard]] NodeIndex findBestSibling(const AABBType& leafAABB) const; // Branch‑and‑bound
 
     // --- Rebuild ---
+    
+    template <typename F>
+    void collideLeafAndSubtree(NodeIndex leafIdx, NodeIndex rootIdx, F&& callback) const;
 
-    /// @brief Coleta todas as folhas de uma subárvore.
+    template <typename F>
+    void collideDisjointSubtrees(NodeIndex rootA, NodeIndex rootB, F&& callback) const;
+
     void collectLeaves(NodeIndex node, std::vector<NodeIndex>& out) const;
 
     /// @brief Libera todos os nós internos de uma subárvore.
@@ -409,6 +430,7 @@ size_t SDBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uin
     nodes[leaf].categoryBits = categoryBits;
     nodes[leaf].child = {NULL_NODE, NULL_NODE}; // Marca como folha
     nodes[leaf].leafCount = 1;
+    nodes[leaf].height = 0;
     nodes[leaf].constructionArea = Traits::surfaceArea(leafAABB);
     totalTreeArea += nodes[leaf].constructionArea;
     leafCount++;
@@ -431,6 +453,7 @@ size_t SDBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uin
     nodes[newParent].child = {bestSibling, static_cast<NodeIndex>(leaf)};
     nodes[newParent].categoryBits = nodes[bestSibling].categoryBits | categoryBits;
     nodes[newParent].leafCount = nodes[bestSibling].leafCount + 1;
+    nodes[newParent].height = 1 + nodes[bestSibling].height;
     totalTreeArea += nodes[newParent].constructionArea;
 
     nodes[bestSibling].parent = newParent;
@@ -454,7 +477,7 @@ size_t SDBVH<T, Traits>::insert(const AABBType& leafAABB, const T& userData, uin
 template <typename T, typename Traits>
 void SDBVH<T, Traits>::setCategoryBits(size_t leafIndex, uint64_t categoryBits)
 {
-    assert(isLeaf(leafIndex) && "setCategoryBits() chamado em nó não-folha");
+    assert(isLeaf(leafIndex) && "setCategoryBits() called on non-leaf node");
     nodes[leafIndex].categoryBits = categoryBits;
     refitAndRotateAncestors(leafIndex);
 }
@@ -516,6 +539,7 @@ void SDBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
     nodes[newParent].child = {bestSibling, static_cast<NodeIndex>(leafIndex)};
     nodes[newParent].categoryBits = nodes[bestSibling].categoryBits | nodes[leafIndex].categoryBits;
     nodes[newParent].leafCount = nodes[bestSibling].leafCount + nodes[leafIndex].leafCount;
+    nodes[newParent].height = 1 + std::max(nodes[bestSibling].height, nodes[leafIndex].height);
     totalTreeArea += nodes[newParent].constructionArea;
 
     nodes[bestSibling].parent = newParent;
@@ -535,7 +559,7 @@ void SDBVH<T, Traits>::reinsertLeaf(size_t leafIndex)
 template <typename T, typename Traits>
 void SDBVH<T, Traits>::remove(size_t leafIndex)
 {
-    assert(isLeaf(leafIndex) && "remove() chamado em nó não-folha");
+    assert(isLeaf(leafIndex) && "remove() called on non-leaf node");
     totalTreeArea -= Traits::surfaceArea(nodes[leafIndex].aabb);
     if (leafCount > 0) leafCount--;
     detachLeaf(leafIndex);
@@ -545,7 +569,7 @@ void SDBVH<T, Traits>::remove(size_t leafIndex)
 template <typename T, typename Traits>
 size_t SDBVH<T, Traits>::moveObject(size_t leafIndex, const AABBType& newAABB, const VecType& velocity, float epsilon)
 {
-    assert(isLeaf(leafIndex) && "moveObject() chamado em nó não-folha");
+    assert(isLeaf(leafIndex) && "moveObject() called on non-leaf node");
 
     if (Traits::contains(nodes[leafIndex].aabb, newAABB))
     {
@@ -573,7 +597,7 @@ size_t SDBVH<T, Traits>::moveObject(size_t leafIndex, const AABBType& newAABB, c
 template <typename T, typename Traits>
 void SDBVH<T, Traits>::enlargeProxy(size_t leafIndex, const AABBType& newAABB)
 {
-    assert(isLeaf(leafIndex) && "enlargeProxy() chamado em nó não-folha");
+    assert(isLeaf(leafIndex) && "enlargeProxy() called on non-leaf node");
 
     float oldArea = Traits::surfaceArea(nodes[leafIndex].aabb);
     nodes[leafIndex].aabb = newAABB;
@@ -624,7 +648,7 @@ void SDBVH<T, Traits>::clearMoved()
     if (root == NULL_NODE || !nodes[root].isMoved())
         return;
 
-    FixedStack<NodeIndex, 256> stack;
+    FixedStack<NodeIndex, 2048> stack;
     stack.push(root);
 
     while (!stack.empty())
@@ -644,66 +668,16 @@ void SDBVH<T, Traits>::clearMoved()
 }
 
 template <typename T, typename Traits>
-template <typename F>
-void SDBVH<T, Traits>::queryMaskMoved(const AABBType& queryAABB, F&& callback, uint64_t maskBits) const
-{
-    if (root == NULL_NODE) return;
-
-    const NodeType& rootNode = nodes[root];
-    if (!rootNode.isMoved() || (rootNode.categoryBits & maskBits) == 0 || !Traits::overlaps(rootNode.aabb, queryAABB))
-        return;
-
-    NodeIndex stack[256];
-    int stackCount = 0;
-    NodeIndex current = root;
-
-    while (current != NULL_NODE)
-    {
-        const NodeType& node = nodes[current];
-
-        if (node.isLeaf())
-        {
-            if (!callback(static_cast<size_t>(current), node.userData))
-                return;
-            current = (stackCount > 0) ? stack[--stackCount] : NULL_NODE;
-        }
-        else
-        {
-            NodeIndex c0 = node.child[0];
-            NodeIndex c1 = node.child[1];
-            const NodeType& n0 = nodes[c0];
-            const NodeType& n1 = nodes[c1];
-
-            bool hit0 = n0.isMoved() && ((n0.categoryBits & maskBits) != 0) && Traits::overlaps(n0.aabb, queryAABB);
-            bool hit1 = n1.isMoved() && ((n1.categoryBits & maskBits) != 0) && Traits::overlaps(n1.aabb, queryAABB);
-
-            if (hit0 && hit1)
-            {
-                if (stackCount < 256)
-                    stack[stackCount++] = c1;
-                current = c0;
-            }
-            else if (hit0)
-                current = c0;
-            else if (hit1)
-                current = c1;
-            else
-                current = (stackCount > 0) ? stack[--stackCount] : NULL_NODE;
-        }
-    }
-}
-
-template <typename T, typename Traits>
-template <typename F>
+template <bool OnlyMoved, typename F>
 void SDBVH<T, Traits>::query(const AABBType& queryAABB, F&& callback, uint64_t maskBits) const
 {
     if (root == NULL_NODE) return;
 
     const NodeType& rootNode = nodes[root];
-    if ((rootNode.categoryBits & maskBits) == 0 || !Traits::overlaps(rootNode.aabb, queryAABB))
+    if ((OnlyMoved && !rootNode.isMoved()) || (rootNode.categoryBits & maskBits) == 0 || !Traits::overlaps(rootNode.aabb, queryAABB))
         return;
 
-    NodeIndex stack[256];
+    NodeIndex stack[2048];
     int stackCount = 0;
     NodeIndex current = root;
 
@@ -724,12 +698,12 @@ void SDBVH<T, Traits>::query(const AABBType& queryAABB, F&& callback, uint64_t m
             const NodeType& n0 = nodes[c0];
             const NodeType& n1 = nodes[c1];
 
-            bool hit0 = ((n0.categoryBits & maskBits) != 0) && Traits::overlaps(n0.aabb, queryAABB);
-            bool hit1 = ((n1.categoryBits & maskBits) != 0) && Traits::overlaps(n1.aabb, queryAABB);
+            bool hit0 = (!OnlyMoved || n0.isMoved()) && ((n0.categoryBits & maskBits) != 0) && Traits::overlaps(n0.aabb, queryAABB);
+            bool hit1 = (!OnlyMoved || n1.isMoved()) && ((n1.categoryBits & maskBits) != 0) && Traits::overlaps(n1.aabb, queryAABB);
 
             if (hit0 && hit1)
             {
-                if (stackCount < 256)
+                if (stackCount < 2048)
                     stack[stackCount++] = c1;
                 current = c0;
             }
@@ -751,7 +725,7 @@ void SDBVH<T, Traits>::rayCast(const VecType& origin, const VecType& direction, 
 
     VecType invDir = Traits::inverseDirection(direction);
 
-    FixedStack<NodeIndex, 256> stack;
+    FixedStack<NodeIndex, 2048> stack;
     stack.push(root);
 
     while (!stack.empty())
@@ -780,58 +754,185 @@ void SDBVH<T, Traits>::rayCast(const VecType& origin, const VecType& direction, 
 
 template <typename T, typename Traits>
 template <typename F>
-void SDBVH<T, Traits>::queryPairs(NodeIndex startA, NodeIndex startB, F&& callback) const
+void SDBVH<T, Traits>::collideLeafAndSubtree(NodeIndex leafIdx, NodeIndex rootIdx, F&& callback) const
 {
-    if (root == NULL_NODE || !nodes[root].isMoved()) return;
+    const NodeType& leaf = nodes[leafIdx];
+    const bool leafMoved = leaf.isMoved();
+    const AABBType& leafAABB = leaf.aabb;
 
-    struct StackEntry { NodeIndex a, b; };
-    FixedStack<StackEntry, 256> stack;
-    stack.push({startA, startB});
-
-    while (!stack.empty())
+    if (nodes[rootIdx].isLeaf())
     {
-        StackEntry e = stack.pop();
+        if ((leafMoved || nodes[rootIdx].isMoved()) && Traits::overlaps(leafAABB, nodes[rootIdx].aabb))
+            callback(static_cast<size_t>(leafIdx), static_cast<size_t>(rootIdx));
+        return;
+    }
 
+    NodeIndex stack[2048];
+    int stackCount = 0;
+    stack[stackCount++] = rootIdx;
+
+    while (stackCount > 0)
+    {
+        NodeIndex curr = stack[--stackCount];
+        const NodeType& node = nodes[curr];
+
+        NodeIndex c0 = node.child[0];
+        NodeIndex c1 = node.child[1];
+        const NodeType& n0 = nodes[c0];
+        const NodeType& n1 = nodes[c1];
+
+        if ((leafMoved || n0.isMoved()) && Traits::overlaps(leafAABB, n0.aabb))
+        {
+            if (n0.isLeaf())
+                callback(static_cast<size_t>(leafIdx), static_cast<size_t>(c0));
+            else if (stackCount < 2048)
+                stack[stackCount++] = c0;
+        }
+
+        if ((leafMoved || n1.isMoved()) && Traits::overlaps(leafAABB, n1.aabb))
+        {
+            if (n1.isLeaf())
+                callback(static_cast<size_t>(leafIdx), static_cast<size_t>(c1));
+            else if (stackCount < 2048)
+                stack[stackCount++] = c1;
+        }
+    }
+}
+
+template <typename T, typename Traits>
+template <typename F>
+void SDBVH<T, Traits>::collideDisjointSubtrees(NodeIndex rootA, NodeIndex rootB, F&& callback) const
+{
+    struct PairEntry { NodeIndex a, b; };
+    PairEntry stack[2048];
+    int stackTop = 0;
+    stack[stackTop++] = {rootA, rootB};
+
+    while (stackTop > 0)
+    {
+        PairEntry e = stack[--stackTop];
         NodeIndex A = e.a, B = e.b;
         const NodeType& nodeA = nodes[A];
         const NodeType& nodeB = nodes[B];
 
-        if (!nodeA.isMoved() && !nodeB.isMoved())
-            continue;
-
-        if (!Traits::overlaps(nodeA.aabb, nodeB.aabb))
-            continue;
-
-        if (A == B)
+        if (nodeA.constructionArea >= nodeB.constructionArea)
         {
-            if (!nodeA.isLeaf())
+            NodeIndex c0 = nodeA.child[0];
+            NodeIndex c1 = nodeA.child[1];
+            const NodeType& n0 = nodes[c0];
+            const NodeType& n1 = nodes[c1];
+
+            if ((n0.isMoved() || nodeB.isMoved()) && Traits::overlaps(n0.aabb, nodeB.aabb))
             {
-                NodeIndex c0 = nodeA.child[0];
-                NodeIndex c1 = nodeA.child[1];
-                stack.push({c0, c0});
-                stack.push({c1, c1});
-                stack.push({c0, c1});
+                if (n0.isLeaf())
+                    collideLeafAndSubtree(c0, B, callback);
+                else if (stackTop < 2048)
+                    stack[stackTop++] = {c0, B};
             }
-            continue;
-        }
 
-        if (nodeA.isLeaf() && nodeB.isLeaf())
-        {
-            callback(static_cast<size_t>(A), static_cast<size_t>(B));
-            continue;
-        }
-
-        // Teste de SAH vs DFS
-        // if (nodeB.isLeaf() || (!nodeA.isLeaf() && Traits::surfaceArea(nodeA.aabb) >= Traits::surfaceArea(nodeB.aabb)))
-        if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.leafCount >= nodeB.leafCount))
-        {
-            stack.push({nodeA.child[0], B});
-            stack.push({nodeA.child[1], B});
+            if ((n1.isMoved() || nodeB.isMoved()) && Traits::overlaps(n1.aabb, nodeB.aabb))
+            {
+                if (n1.isLeaf())
+                    collideLeafAndSubtree(c1, B, callback);
+                else if (stackTop < 2048)
+                    stack[stackTop++] = {c1, B};
+            }
         }
         else
         {
-            stack.push({A, nodeB.child[0]});
-            stack.push({A, nodeB.child[1]});
+            NodeIndex c0 = nodeB.child[0];
+            NodeIndex c1 = nodeB.child[1];
+            const NodeType& n0 = nodes[c0];
+            const NodeType& n1 = nodes[c1];
+
+            if ((nodeA.isMoved() || n0.isMoved()) && Traits::overlaps(nodeA.aabb, n0.aabb))
+            {
+                if (n0.isLeaf())
+                    collideLeafAndSubtree(c0, A, callback);
+                else if (stackTop < 2048)
+                    stack[stackTop++] = {A, c0};
+            }
+
+            if ((nodeA.isMoved() || n1.isMoved()) && Traits::overlaps(nodeA.aabb, n1.aabb))
+            {
+                if (n1.isLeaf())
+                    collideLeafAndSubtree(c1, A, callback);
+                else if (stackTop < 2048)
+                    stack[stackTop++] = {A, c1};
+            }
+        }
+    }
+}
+
+template <typename T, typename Traits>
+template <typename F>
+void SDBVH<T, Traits>::queryPairs(NodeIndex startA, NodeIndex startB, F&& callback) const
+{
+    if (root == NULL_NODE || !nodes[root].isMoved()) return;
+
+    if (startA != startB)
+    {
+        const NodeType& startNodeA = nodes[startA];
+        const NodeType& startNodeB = nodes[startB];
+
+        if (!startNodeA.isMoved() && !startNodeB.isMoved())
+            return;
+
+        if (!Traits::overlaps(startNodeA.aabb, startNodeB.aabb))
+            return;
+
+        if (startNodeA.isLeaf())
+        {
+            collideLeafAndSubtree(startA, startB, callback);
+            return;
+        }
+        if (startNodeB.isLeaf())
+        {
+            collideLeafAndSubtree(startB, startA, callback);
+            return;
+        }
+
+        collideDisjointSubtrees(startA, startB, callback);
+        return;
+    }
+
+    // Travessia de auto colisão guiada por Lowest Common Ancestors (LCAs)
+    const NodeType& startNode = nodes[startA];
+    if (!startNode.isMoved() || startNode.isLeaf()) return;
+
+    NodeIndex lcaStack[128];
+    int lcaTop = 0;
+    lcaStack[lcaTop++] = startA;
+
+    while (lcaTop > 0)
+    {
+        NodeIndex curr = lcaStack[--lcaTop];
+        const NodeType& node = nodes[curr];
+        if (!node.isMoved() || node.isLeaf())
+            continue;
+
+        NodeIndex c0 = node.child[0];
+        NodeIndex c1 = node.child[1];
+        const NodeType& n0 = nodes[c0];
+        const NodeType& n1 = nodes[c1];
+
+        // Desce para filhos internos marcados
+        if (n0.isMoved() && !n0.isLeaf() && lcaTop < 128)
+            lcaStack[lcaTop++] = c0;
+        if (n1.isMoved() && !n1.isLeaf() && lcaTop < 128)
+            lcaStack[lcaTop++] = c1;
+
+        // Colide subárvores disjuntas na bifurcação
+        if ((n0.isMoved() || n1.isMoved()) && Traits::overlaps(n0.aabb, n1.aabb))
+        {
+            if (n0.isLeaf() && n1.isLeaf())
+                callback(static_cast<size_t>(c0), static_cast<size_t>(c1));
+            else if (n0.isLeaf())
+                collideLeafAndSubtree(c0, c1, callback);
+            else if (n1.isLeaf())
+                collideLeafAndSubtree(c1, c0, callback);
+            else
+                collideDisjointSubtrees(c0, c1, callback);
         }
     }
 }
@@ -918,15 +1019,23 @@ int SDBVH<T, Traits>::gatherSubtreePairs(NodeIndex* outA, NodeIndex* outB, int m
 
         if (count + static_cast<int>(queue.size()) + 2 <= maxPairs)
         {
-            if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.leafCount >= nodeB.leafCount))
+            if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.constructionArea >= nodeB.constructionArea))
             {
-                queue.push_back({nodeA.child[0], B});
-                queue.push_back({nodeA.child[1], B});
+                NodeIndex c0 = nodeA.child[0];
+                NodeIndex c1 = nodeA.child[1];
+                if ((nodes[c0].isMoved() || nodeB.isMoved()) && Traits::overlaps(nodes[c0].aabb, nodeB.aabb))
+                    queue.push_back({c0, B});
+                if ((nodes[c1].isMoved() || nodeB.isMoved()) && Traits::overlaps(nodes[c1].aabb, nodeB.aabb))
+                    queue.push_back({c1, B});
             }
             else
             {
-                queue.push_back({A, nodeB.child[0]});
-                queue.push_back({A, nodeB.child[1]});
+                NodeIndex c0 = nodeB.child[0];
+                NodeIndex c1 = nodeB.child[1];
+                if ((nodeA.isMoved() || nodes[c0].isMoved()) && Traits::overlaps(nodeA.aabb, nodes[c0].aabb))
+                    queue.push_back({A, c0});
+                if ((nodeA.isMoved() || nodes[c1].isMoved()) && Traits::overlaps(nodeA.aabb, nodes[c1].aabb))
+                    queue.push_back({A, c1});
             }
         }
         else
@@ -977,6 +1086,7 @@ void SDBVH<T, Traits>::refitAndRotateAncestors(NodeIndex startNode)
 
             node.categoryBits = left.categoryBits | right.categoryBits;
             node.leafCount = left.leafCount + right.leafCount;
+            node.height = 1 + std::max(left.height, right.height);
             node.setEnlarged();
             if (left.isMoved() || right.isMoved())
                 node.setMoved();
@@ -1053,9 +1163,11 @@ void SDBVH<T, Traits>::tryRotate(NodeIndex idx)
 
     nodes[Y].categoryBits = nodes[X].categoryBits | nodes[O].categoryBits;
     nodes[Y].leafCount = nodes[X].leafCount + nodes[O].leafCount;
+    nodes[Y].height = 1 + std::max(nodes[X].height, nodes[O].height);
 
     A.categoryBits = nodes[A.child[0]].categoryBits | nodes[A.child[1]].categoryBits;
     A.leafCount = nodes[A.child[0]].leafCount + nodes[A.child[1]].leafCount;
+    A.height = 1 + std::max(nodes[A.child[0]].height, nodes[A.child[1]].height);
 }
 
 template <typename T, typename Traits>
@@ -1171,7 +1283,7 @@ void SDBVH<T, Traits>::collectLeaves(NodeIndex node, std::vector<NodeIndex>& out
 {
     if (node == NULL_NODE) return;
 
-    FixedStack<NodeIndex, 64> stack;
+    FixedStack<NodeIndex, 2048> stack;
     stack.push(node);
 
     while (!stack.empty())
@@ -1194,7 +1306,7 @@ void SDBVH<T, Traits>::freeInternalNodes(NodeIndex node)
 {
     if (node == NULL_NODE) return;
 
-    FixedStack<NodeIndex, 64> stack;
+    FixedStack<NodeIndex, 2048> stack;
     stack.push(node);
 
     while (!stack.empty())
@@ -1221,6 +1333,7 @@ NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t 
         NodeIndex leaf = static_cast<NodeIndex>(leaves[start]);
         nodes[leaf].parent = NULL_NODE;
         nodes[leaf].leafCount = 1;
+        nodes[leaf].height = 0;
         nodes[leaf].constructionArea = Traits::surfaceArea(nodes[leaf].aabb);
         return leaf;
     }
@@ -1232,9 +1345,11 @@ NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t 
         NodeIndex right = static_cast<NodeIndex>(leaves[start + 1]);
 
         nodes[left].leafCount = 1;
+        nodes[left].height = 0;
         nodes[left].constructionArea = Traits::surfaceArea(nodes[left].aabb);
 
         nodes[right].leafCount = 1;
+        nodes[right].height = 0;
         nodes[right].constructionArea = Traits::surfaceArea(nodes[right].aabb);
 
         nodes[internal].child = {left, right};
@@ -1242,6 +1357,7 @@ NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t 
         nodes[internal].constructionArea = Traits::surfaceArea(nodes[internal].aabb);
         nodes[internal].categoryBits = nodes[left].categoryBits | nodes[right].categoryBits;
         nodes[internal].leafCount = 2;
+        nodes[internal].height = 1;
         if (nodes[left].isMoved() || nodes[right].isMoved())
             nodes[internal].setMoved();
         nodes[left].parent = internal;
@@ -1273,7 +1389,7 @@ NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t 
     float axisMax = Traits::getMax(centroidBounds, axis);
 
     // Se todos os centróides coincidem, particiona no meio
-    if (axisMax - axisMin < 1e-7f)
+    if (axisMax - axisMin < EPSILON)
     {
         size_t mid = start + count / 2;
         NodeIndex internal = static_cast<NodeIndex>(allocateNode());
@@ -1285,6 +1401,7 @@ NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t 
         nodes[internal].constructionArea = Traits::surfaceArea(nodes[internal].aabb);
         nodes[internal].categoryBits = nodes[left].categoryBits | nodes[right].categoryBits;
         nodes[internal].leafCount = nodes[left].leafCount + nodes[right].leafCount;
+        nodes[internal].height = 1 + std::max(nodes[left].height, nodes[right].height);
         if (nodes[left].isMoved() || nodes[right].isMoved())
             nodes[internal].setMoved();
         nodes[left].parent = internal;
@@ -1404,6 +1521,7 @@ NodeIndex SDBVH<T, Traits>::buildSubtree(std::vector<NodeIndex>& leaves, size_t 
     nodes[internal].constructionArea = Traits::surfaceArea(nodes[internal].aabb);
     nodes[internal].categoryBits = nodes[left].categoryBits | nodes[right].categoryBits;
     nodes[internal].leafCount = nodes[left].leafCount + nodes[right].leafCount;
+    nodes[internal].height = 1 + std::max(nodes[left].height, nodes[right].height);
     if (nodes[left].isMoved() || nodes[right].isMoved())
         nodes[internal].setMoved();
     nodes[left].parent = internal;
@@ -1417,7 +1535,7 @@ float SDBVH<T, Traits>::computeTotalSurfaceArea() const
 {
     if (root == NULL_NODE) return 0.0f;
     float sum = 0.0f;
-    FixedStack<NodeIndex, 128> stack;
+    FixedStack<NodeIndex, 2048> stack;
     stack.push(root);
     while (!stack.empty())
     {
@@ -1437,12 +1555,23 @@ float SDBVH<T, Traits>::computeTotalSurfaceArea() const
 template <typename T, typename Traits>
 float SDBVH<T, Traits>::getDegradationAlpha() const
 {
-    if (root == NULL_NODE || leafCount <= 1) return 0.0f;
+    if (root == NULL_NODE || leafCount <= 1) return 1.0f;
     float rootArea = Traits::surfaceArea(nodes[root].aabb);
-    if (rootArea <= 1e-7f) return 0.0f;
-    float denom = rootArea * static_cast<float>(leafCount) * std::log2(static_cast<float>(leafCount));
-    if (denom <= 1e-7f) return 0.0f;
-    return totalTreeArea / denom;
+    if (rootArea <= EPSILON) return 1.0f;
+
+    float ratioArea = 1.0f;
+    if (constructionTotalArea > EPSILON)
+        ratioArea = totalTreeArea / constructionTotalArea;
+    else if (totalTreeArea > EPSILON)
+    {
+        const_cast<SDBVH*>(this)->constructionTotalArea = totalTreeArea;
+        ratioArea = 1.0f;
+    }
+
+    float rootConstruction = nodes[root].constructionArea;
+    float rootRatio = (rootConstruction > EPSILON) ? (rootArea / rootConstruction) : 1.0f;
+
+    return std::max(ratioArea, rootRatio);
 }
 
 template <typename T, typename Traits>
@@ -1485,7 +1614,74 @@ void SDBVH<T, Traits>::rebuild(NodeIndex subtreeRoot, bool updateArea)
     markProxyMoved(newRoot);
 
     if (updateArea)
+    {
         totalTreeArea = computeTotalSurfaceArea();
+        if (subtreeRoot == NULL_NODE || subtreeRoot == root)
+            constructionTotalArea = totalTreeArea;
+    }
+}
+
+template <typename T, typename Traits>
+void SDBVH<T, Traits>::buildShadowFrom(const SDBVH& source)
+{
+    if (source.root == NULL_NODE || source.leafCount == 0)
+    {
+        nodes.clear();
+        freeList.clear();
+        root = NULL_NODE;
+        leafCount = 0;
+        totalTreeArea = 0.0f;
+        return;
+    }
+
+    config = source.config;
+
+    std::vector<NodeIndex> leaves;
+    leaves.reserve(source.leafCount);
+    source.collectLeaves(source.root, leaves);
+
+    if (leaves.empty())
+    {
+        nodes.clear();
+        freeList.clear();
+        root = NULL_NODE;
+        leafCount = 0;
+        totalTreeArea = 0.0f;
+        return;
+    }
+
+    NodeIndex maxLeafIdx = 0;
+    for (NodeIndex leafIdx : leaves)
+        if (leafIdx > maxLeafIdx)
+            maxLeafIdx = leafIdx;
+
+    size_t requiredSize = std::max(static_cast<size_t>(maxLeafIdx + 1), source.nodes.size());
+    nodes.assign(requiredSize, NodeType());
+    freeList.clear();
+
+    std::vector<uint8_t> isLeafSlot(requiredSize, 0);
+    for (NodeIndex leafIdx : leaves)
+    {
+        isLeafSlot[leafIdx] = 1;
+        nodes[leafIdx] = source.nodes[leafIdx];
+        nodes[leafIdx].parent = NULL_NODE;
+        nodes[leafIdx].child = {NULL_NODE, NULL_NODE};
+        nodes[leafIdx].leafCount = 1;
+        nodes[leafIdx].height = 0;
+        nodes[leafIdx].clearMoved();
+    }
+
+    for (size_t i = 0; i < requiredSize; ++i)
+        if (!isLeafSlot[i])
+            freeList.push_back(i);
+
+    root = buildSubtree(leaves, 0, leaves.size());
+    if (root != NULL_NODE)
+        nodes[root].parent = NULL_NODE;
+
+    leafCount = leaves.size();
+    totalTreeArea = computeTotalSurfaceArea();
+    constructionTotalArea = totalTreeArea;
 }
 
 template <typename T, typename Traits>
@@ -1500,8 +1696,7 @@ int SDBVH<T, Traits>::computeSubtreeHeight(NodeIndex nodeIdx) const
 template <typename T, typename Traits>
 int SDBVH<T, Traits>::getHeight() const
 {
-    if (root == NULL_NODE) return 0;
-    return computeSubtreeHeight(root);
+    return (root != NULL_NODE) ? static_cast<int>(nodes[root].height) : 0;
 }
 
 template <typename T, typename Traits>
@@ -1519,7 +1714,7 @@ TreeQualityMetrics SDBVH<T, Traits>::computeQualityMetrics(float traversalCost, 
     int leaves = 0;
     int totalNodes = 0;
 
-    FixedStack<NodeIndex, 128> stack;
+    FixedStack<NodeIndex, 2048> stack;
     stack.push(root);
 
     while (stack.top > 0)
@@ -1600,7 +1795,7 @@ TreeQualityMetrics SDBVH<T, Traits>::computeIdealQualityMetrics(float traversalC
 template <typename T, typename Traits>
 int SDBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric, int maxRebuilds, int maxSubtreeLeaves)
 {
-    if (root == NULL_NODE || maxRebuilds <= 0) return 0;
+    if (root == NULL_NODE || maxRebuilds <= 0 || !nodes[root].isMoved()) return 0;
 
     struct CandidateInfo {
         NodeIndex idx;
@@ -1611,7 +1806,7 @@ int SDBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric,
 
     if (metric == DegradationMetric::AreaRatio)
     {
-        NodeIndex stack[256];
+        NodeIndex stack[2048];
         int stackCount = 0;
         stack[stackCount++] = root;
 
@@ -1620,7 +1815,7 @@ int SDBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric,
             NodeIndex idx = stack[--stackCount];
             const NodeType& node = nodes[idx];
 
-            if (node.isLeaf()) continue;
+            if (node.isLeaf() || !node.isMoved()) continue;
 
             float currentArea = Traits::surfaceArea(node.aabb);
             float ratio = (node.constructionArea > 0.0f)
@@ -1633,15 +1828,14 @@ int SDBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric,
                     candidates.push_back({idx, ratio, node.leafCount});
                 else
                 {
-                    // Branch is too large; descend into children to find smaller degraded subtrees
-                    if (node.child[0] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[0];
-                    if (node.child[1] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[1];
+                    if (node.child[0] != NULL_NODE && stackCount < 2046) stack[stackCount++] = node.child[0];
+                    if (node.child[1] != NULL_NODE && stackCount < 2046) stack[stackCount++] = node.child[1];
                 }
             }
             else
             {
-                if (node.child[0] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[0];
-                if (node.child[1] != NULL_NODE && stackCount < 254) stack[stackCount++] = node.child[1];
+                if (node.child[0] != NULL_NODE && stackCount < 2046) stack[stackCount++] = node.child[0];
+                if (node.child[1] != NULL_NODE && stackCount < 2046) stack[stackCount++] = node.child[1];
             }
         }
 
@@ -1667,6 +1861,5 @@ int SDBVH<T, Traits>::rebuildDegraded(float threshold, DegradationMetric metric,
 
     return rebuildCount;
 }
-
 
 } // namespace sdbvh

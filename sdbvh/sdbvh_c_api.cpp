@@ -262,6 +262,15 @@ int32_t sdbvh_rebuild_degraded_adaptive( sdbvh_tree_t* tree, float threshold, sd
 		bvh->rebuildDegraded( threshold, static_cast<sdbvh::DegradationMetric>( metric ), maxRebuilds, maxSubtreeLeaves ) );
 }
 
+void sdbvh_build_shadow( sdbvh_tree_t* sourceTree, sdbvh_tree_t* shadowTree )
+{
+	if ( !sourceTree || !shadowTree )
+		return;
+	const sdbvh::SDBVH<int32_t>* src = reinterpret_cast<const sdbvh::SDBVH<int32_t>*>( sourceTree );
+	sdbvh::SDBVH<int32_t>* dst = reinterpret_cast<sdbvh::SDBVH<int32_t>*>( shadowTree );
+	dst->buildShadowFrom( *src );
+}
+
 int32_t sdbvh_get_height( const sdbvh_tree_t* tree )
 {
 	if ( !tree )
