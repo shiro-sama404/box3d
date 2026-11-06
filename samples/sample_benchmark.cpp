@@ -1586,6 +1586,54 @@ public:
 
 static int benchmarkSpinner = RegisterSample( "Benchmark", "Spinner", BenchmarkSpinner::Create );
 
+class BenchmarkSpinner2 : public Sample
+{
+public:
+	explicit BenchmarkSpinner2( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_camera->SetView( 0.0f, 12.0f, 45.0f, { 0.0f, 12.0f, 0.0f } );
+		}
+
+		b3Capacity capacity = {};
+		GetSpinner2Capacity( &capacity );
+		CreateWorld( &capacity );
+
+		CreateSpinner2( m_worldId );
+	}
+
+	~BenchmarkSpinner2() override
+	{
+		DestroySpinner2();
+	}
+
+	void Step() override
+	{
+		if ( m_context->pause == false || m_context->singleStep > 0 )
+		{
+			StepSpinner2( m_worldId, m_stepCount );
+		}
+
+		Sample::Step();
+
+		DrawTextLine( "spinner angle = %.2f", GetSpinner2Angle() );
+	}
+
+	bool DrawControls() override
+	{
+		return DrawActorScaleControls( m_context );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new BenchmarkSpinner2( context );
+	}
+};
+
+static int benchmarkSpinner2 = RegisterSample( "Benchmark", "Spinner 2", BenchmarkSpinner2::Create );
+
 class BenchmarkRagdollPile : public Sample
 {
 public:

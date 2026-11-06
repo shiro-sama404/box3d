@@ -1291,6 +1291,204 @@ float GetSpinnerAngle( void )
 	return b3RevoluteJoint_GetAngle( g_spinnerData.spinnerId );
 }
 
+typedef struct
+{
+	b3BodyId groundId;
+	b3MeshData* cylinderMesh;
+	b3JointId spinnerId;
+	float time;
+} Spinner2Data;
+
+static Spinner2Data g_spinner2Data;
+
+void GetSpinner2Capacity( b3Capacity* capacity )
+{
+	int n = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 500 : 1500 );
+	capacity->staticShapeCount = 64;
+	capacity->staticBodyCount = 16;
+	capacity->dynamicShapeCount = n + 64;
+	capacity->dynamicBodyCount = n + 64;
+	capacity->contactCount = b3MaxInt( 50000, n * 32 );
+}
+
+// Spinner 2: Recreated from Spinner, with the closed drum performing smooth harmonic
+// translation in the XY plane (parallel to the camera view plane). The drum is constructed
+// from solid convex hull segments with 2.0m wall thickness and solid caps (identical in
+// principle to the Washer benchmark), ensuring 100% physically leak-free containment
+// of dynamic spheres while forcing the broadphase hierarchy to continuously update in space.
+void CreateSpinner2( b3WorldId worldId )
+{
+	g_spinner2Data = (Spinner2Data){ 0 };
+
+	int bodyCount = g_benchmarkActorCount > 0 ? g_benchmarkActorCount : ( BENCHMARK_DEBUG ? 500 : 1500 );
+
+	float s = (float)bodyCount / 1500.0f;
+	float radius = 12.0f * ( s > 1.0f ? powf( s, 0.25f ) : 1.0f );
+	float halfDepth = 1.0f * ( s > 1.0f ? sqrtf( s ) : 1.0f );
+	float yCenter = radius;
+
+	b3BodyId groundId;
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_kinematicBody;
+		groundId = b3CreateBody( worldId, &bodyDef );
+
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		shapeDef.baseMaterial.friction = 0.1f;
+
+		int segmentCount = 48;
+		float r0 = radius;
+		float r1 = radius + 2.0f;
+
+		for ( int i = 0; i < segmentCount; ++i )
+		{
+			float a1 = 2.0f * B3_PI * (float)i / (float)segmentCount;
+			float a2 = 2.0f * B3_PI * (float)( i + 1 ) / (float)segmentCount;
+
+			b3Vec3 p1 = { r0 * cosf( a1 ), r0 * sinf( a1 ) + yCenter, -halfDepth };
+			b3Vec3 p2 = { r1 * cosf( a1 ), r1 * sinf( a1 ) + yCenter, -halfDepth };
+			b3Vec3 p3 = { r0 * cosf( a2 ), r0 * sinf( a2 ) + yCenter, -halfDepth };
+			b3Vec3 p4 = { r1 * cosf( a2 ), r1 * sinf( a2 ) + yCenter, -halfDepth };
+
+			b3Vec3 p5 = { r0 * cosf( a1 ), r0 * sinf( a1 ) + yCenter, halfDepth };
+			b3Vec3 p6 = { r1 * cosf( a1 ), r1 * sinf( a1 ) + yCenter, halfDepth };
+			b3Vec3 p7 = { r0 * cosf( a2 ), r0 * sinf( a2 ) + yCenter, halfDepth };
+			b3Vec3 p8 = { r1 * cosf( a2 ), r1 * sinf( a2 ) + yCenter, halfDepth };
+
+			b3Vec3 points[8] = { p1, p2, p3, p4, p5, p6, p7, p8 };
+			b3HullData* hull = b3CreateHull( points, 8, 8 );
+			b3CreateHullShape( groundId, &shapeDef, hull );
+			b3DestroyHull( hull );
+		}
+
+		// Caps: two solid end plates
+		float capThickness = 0.5f;
+		b3BoxHull capNear = b3MakeBoxHull( r1 + 0.5f, r1 + 0.5f, capThickness );
+		b3Transform xfNear = { { 0.0f, yCenter, -halfDepth - capThickness }, b3Quat_identity };
+		b3CreateTransformedHullShape( groundId, &shapeDef, &capNear.base, xfNear, b3Vec3_one );
+
+		b3BoxHull capFar = b3MakeBoxHull( r1 + 0.5f, r1 + 0.5f, capThickness );
+		b3Transform xfFar = { { 0.0f, yCenter, halfDepth + capThickness }, b3Quat_identity };
+		b3CreateTransformedHullShape( groundId, &shapeDef, &capFar.base, xfFar, b3Vec3_one );
+	}
+
+	g_spinner2Data.groundId = groundId;
+
+	{
+		float halfLength = 0.5f * radius;
+
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ 0.0f, yCenter - halfLength, 0.0f };
+		bodyDef.enableSleep = false;
+
+		b3BodyId spinnerId = b3CreateBody( worldId, &bodyDef );
+
+		b3BoxHull paddle = b3MakeBoxHull( 0.3f, halfLength - 0.1f, halfDepth - 0.05f );
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		shapeDef.baseMaterial.friction = 0.0f;
+		b3CreateHullShape( spinnerId, &shapeDef, &paddle.base );
+
+		b3RevoluteJointDef jointDef = b3DefaultRevoluteJointDef();
+		jointDef.base.bodyIdA = groundId;
+		jointDef.base.bodyIdB = spinnerId;
+		jointDef.base.localFrameA.p = (b3Vec3){ 0.0f, yCenter - halfLength, 0.0f };
+		jointDef.enableMotor = true;
+		jointDef.motorSpeed = 8.0f;
+		jointDef.maxMotorTorque = FLT_MAX;
+
+		g_spinner2Data.spinnerId = b3CreateRevoluteJoint( worldId, &jointDef );
+	}
+
+	b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, 0.2f };
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.isBullet = true;
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.baseMaterial.friction = 0.1f;
+	shapeDef.baseMaterial.restitution = 0.1f;
+	shapeDef.density = 0.25f;
+
+	// The grid starts low where the cylinder is narrow, so the span has to fit the chord there
+	float spacing = 0.55f;
+	float yStart = 2.0f;
+	float chordHalfWidth = sqrtf( radius * radius - ( yCenter - yStart ) * ( yCenter - yStart ) );
+	float xLimit = chordHalfWidth - 2.0f * spacing;
+	float zLimit = halfDepth - 2.0f * sphere.radius;
+
+	float x = -xLimit;
+	float y = yStart;
+	float z = -zLimit;
+
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		bodyDef.position = (b3Pos){ x, y, z };
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+
+		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+
+		z += spacing;
+
+		if ( z > zLimit )
+		{
+			z = -zLimit;
+			x += spacing;
+
+			if ( x > xLimit )
+			{
+				x = -xLimit;
+				y += spacing;
+			}
+		}
+	}
+}
+
+void StepSpinner2( b3WorldId worldId, int stepCount )
+{
+	(void)worldId;
+	(void)stepCount;
+
+	float timeStep = 1.0f / 60.0f;
+	g_spinner2Data.time += timeStep;
+
+	float t = g_spinner2Data.time;
+
+	// Smooth harmonic translation in the XY plane (parallel to camera view plane)
+	float amplitudeX = 4.0f;
+	float omegaX = 1.2f;
+	float amplitudeY = 1.5f;
+	float omegaY = 2.4f;
+
+	float x = amplitudeX * ( 1.0f - cosf( omegaX * t ) );
+	float y = amplitudeY * ( 1.0f - cosf( omegaY * t ) );
+
+	b3WorldTransform target = {
+		.p = (b3Pos){ x, y, 0.0f },
+		.q = b3Quat_identity
+	};
+
+	b3Body_SetTargetTransform( g_spinner2Data.groundId, target, timeStep, true );
+}
+
+void DestroySpinner2( void )
+{
+	memset( &g_spinner2Data, 0, sizeof( g_spinner2Data ) );
+}
+
+float GetSpinner2Angle( void )
+{
+	if ( b3Joint_IsValid( g_spinner2Data.spinnerId ) == false )
+	{
+		return 0.0f;
+	}
+
+	return b3RevoluteJoint_GetAngle( g_spinner2Data.spinnerId );
+}
+
+
+
 #define SLEEP_PYRAMID_COUNT 10
 
 typedef struct
