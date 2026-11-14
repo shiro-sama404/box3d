@@ -1,3 +1,0 @@
-frame,step_ms,pairs_ms,collide_ms,solve_ms,contact_count,tree_height,leaf_count,node_count,sah_standard,sah_normalized,ideal_sah_standard,ideal_sah_normalized,ideal_tree_height,quality_ratio_standard,quality_ratio_normalized
-0,125.9166,54.4022,28.8481,42.6323,10528,15,10001,20001,80990.2109,63.3506,0.0000,0.0000,0,0.0000,0.0000
-1,67.4081,2.2422,20.6506,44.5135,11928,15,10001,20001,82251.1797,64.3363,0.0000,0.0000,0,0.0000,0.0000
