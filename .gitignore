@@ -18,7 +18,6 @@ CMakeUserPresets.json
 test_dbvh
 test_native
 test_plots/
-relatorios_tcc/
 
 __pycache__/
 *.py[cod]
