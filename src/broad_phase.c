@@ -722,6 +722,8 @@ static void b3SelfPairsTask( int startIndex, int endIndex, int workerIndex, void
 {
 	b3TracyCZoneNC( self_pairs, "Self", b3_colorCoral, true );
 
+	uint64_t busyTicks = b3GetTicks();
+
 	b3World* world = context;
 	b3BroadPhase* bp = &world->broadPhase;
 	const b3DynamicTree* tree = bp->trees + b3_dynamicBody;
@@ -740,6 +742,8 @@ static void b3SelfPairsTask( int startIndex, int endIndex, int workerIndex, void
 	}
 
 	b3FlushCandidatePairs( &pairContext );
+
+	world->taskContexts.data[workerIndex].selfPairsBusyMs += b3GetMilliseconds( busyTicks );
 
 	b3TracyCZoneEnd( self_pairs );
 }
@@ -1009,6 +1013,8 @@ static void b3SDBVHSelfPairsTask( int startIndex, int endIndex, int workerIndex,
 {
 	b3TracyCZoneNC( sdbvh_self_pairs, "SDBVH Self", b3_colorCoral, true );
 
+	uint64_t busyTicks = b3GetTicks();
+
 	b3SDBVHTaskContext* taskCtx = (b3SDBVHTaskContext*)context;
 	b3World* world = taskCtx->world;
 
@@ -1025,12 +1031,15 @@ static void b3SDBVHSelfPairsTask( int startIndex, int endIndex, int workerIndex,
 
 	b3FlushCandidatePairs( &pairContext );
 
+	world->taskContexts.data[workerIndex].selfPairsBusyMs += b3GetMilliseconds( busyTicks );
+
 	b3TracyCZoneEnd( sdbvh_self_pairs );
 }
 
 void b3UpdateBroadPhasePairs( b3World* world )
 {
 	b3BroadPhase* bp = &world->broadPhase;
+	bp->lastProfile = (b3BroadPhaseProfile){ 0 };
 
 	bool needUpdate = b3HasTreeMoved( bp->trees + b3_staticBody );
 	needUpdate = needUpdate || b3NeedsRebuild( bp->trees + b3_kinematicBody );
@@ -1048,6 +1057,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	for ( int i = 0; i < world->workerCount; ++i )
 	{
 		b3Array_Clear( world->taskContexts.data[i].pairKeys );
+		world->taskContexts.data[i].selfPairsBusyMs = 0.0f;
 	}
 
 	if ( bp->useSDBVH )
@@ -1057,6 +1067,8 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			.pairKeys = &world->taskContexts.data[0].pairKeys,
 			.checkCompounds = world->compoundShapeCount > 0,
 		};
+
+		uint64_t crossTicks = b3GetTicks();
 
 		// SDBVH Integration: query moved dynamic subtrees for static shapes, and the full dynamic tree for kinematic shapes.
 		bool staticMoved = b3HasTreeMoved( bp->trees + b3_staticBody );
@@ -1116,33 +1128,45 @@ void b3UpdateBroadPhasePairs( b3World* world )
 		}
 
 		b3FlushCandidatePairs( &pairContext );
+		bp->lastProfile.crossMs = b3GetMilliseconds( crossTicks );
 
 		// Self-pairs with moved-node pruning (Batched & Task-parallelized)
 		if ( bp->dynamicMoved )
 		{
 			if ( world->workerCount > 1 )
 			{
-				sdbvh_seed_t seeds[64];
-				int seedCount = sdbvh_gather_seeds( bp->sdbvhTree, seeds, 64 );
+				uint64_t seedTicks = b3GetTicks();
+				sdbvh_seed_t seeds[256];
+				int seedCount = sdbvh_gather_seeds( bp->sdbvhTree, seeds, 256 );
+				bp->lastProfile.seedsMs = b3GetMilliseconds( seedTicks );
+				bp->lastProfile.seedCount = seedCount;
 				if ( seedCount > 0 )
 				{
+					uint64_t selfTicks = b3GetTicks();
 					b3SDBVHTaskContext taskCtx = {
 						.world = world,
 						.tree = bp->sdbvhTree,
 						.seeds = seeds,
 					};
 					b3ParallelFor( world, &b3SDBVHSelfPairsTask, seedCount, 1, &taskCtx, "sdbvh self pairs" );
+					bp->lastProfile.selfMs = b3GetMilliseconds( selfTicks );
 				}
 			}
 			else
 			{
+				bp->lastProfile.seedCount = 1;
+				uint64_t selfTicks = b3GetTicks();
 				sdbvh_query_pairs_batched( bp->sdbvhTree, b3SDBVHSelfPairsBatchCallback, &pairContext );
 				b3FlushCandidatePairs( &pairContext );
+				bp->lastProfile.selfMs = b3GetMilliseconds( selfTicks );
+				world->taskContexts.data[0].selfPairsBusyMs = bp->lastProfile.selfMs;
 			}
 		}
 	}
 	else
 	{
+		uint64_t seedTicks = b3GetTicks();
+
 		// Get the sibling pairs of the dynamic body tree that have moved.
 		const b3DynamicTree* dynamicTree = bp->trees + b3_dynamicBody;
 		int pairCapacity = b3MaxInt( dynamicTree->nodeEnd / 2, 1 );
@@ -1157,7 +1181,11 @@ void b3UpdateBroadPhasePairs( b3World* world )
 		B3_ASSERT( kinematicSeedCount <= B3_CROSS_SEED_COUNT );
 		int crossMoveCount = staticSeedCount + kinematicSeedCount;
 
+		bp->lastProfile.seedsMs = b3GetMilliseconds( seedTicks );
+		bp->lastProfile.seedCount = dynamicMoveCount;
+
 		// Collide the dynamic body tree against the static and kinematic trees.
+		uint64_t crossTicks = b3GetTicks();
 		b3CrossContext crossContext = {
 			.world = world,
 			.seeds = crossSeeds,
@@ -1165,15 +1193,37 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			.checkCompounds = world->compoundShapeCount > 0,
 		};
 		b3ParallelFor( world, &b3CrossPairsTask, crossMoveCount, 1, &crossContext, "cross pairs" );
+		bp->lastProfile.crossMs = b3GetMilliseconds( crossTicks );
 
 		// Collide the dynamic body tree against itself.
+		uint64_t selfTicks = b3GetTicks();
 		b3ParallelFor( world, &b3SelfPairsTask, dynamicMoveCount, 64, world, "self pairs" );
+		bp->lastProfile.selfMs = b3GetMilliseconds( selfTicks );
+	}
+
+	{
+		float maxBusy = 0.0f;
+		float sumBusy = 0.0f;
+		for ( int i = 0; i < world->workerCount; ++i )
+		{
+			float b = world->taskContexts.data[i].selfPairsBusyMs;
+			if ( b > maxBusy )
+			{
+				maxBusy = b;
+			}
+			sumBusy += b;
+		}
+		float meanBusy = world->workerCount > 0 ? ( sumBusy / (float)world->workerCount ) : 0.0f;
+		bp->lastProfile.workerSelfMaxMs = maxBusy;
+		bp->lastProfile.workerSelfMeanMs = meanBusy;
+		bp->lastProfile.loadImbalance = meanBusy > 0.0f ? ( maxBusy / meanBusy ) : 1.0f;
 	}
 
 	b3DynamicTree_ClearMoved( bp->trees + b3_staticBody );
 
 	b3TracyCZoneEnd( update_pairs );
 
+	uint64_t sortTicks = b3GetTicks();
 	b3TracyCZoneNC( create_contacts, "Create Contacts", b3_colorCoral, true );
 
 	// Update stale trees.
@@ -1257,6 +1307,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	b3ValidateSolverSets( world );
 
 	b3TracyCZoneEnd( create_contacts );
+	bp->lastProfile.sortContactsMs = b3GetMilliseconds( sortTicks );
 }
 
 b3AABB b3BroadPhase_GetProxyAABB( const b3BroadPhase* bp, int proxyKey )

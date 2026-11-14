@@ -962,105 +962,129 @@ int SDBVH<T, Traits>::gatherSubtreePairs(NodeIndex* outA, NodeIndex* outB, int m
     if (root == NULL_NODE || !nodes[root].isMoved() || maxPairs <= 0)
         return 0;
 
-    struct Pair { NodeIndex a, b; };
-    std::vector<Pair> queue;
-    queue.reserve(maxPairs * 2);
-    queue.push_back({root, root});
+    const uint32_t rootLeaves = nodes[root].leafCount;
+    const uint32_t minSplitLeaves = std::max<uint32_t>(rootLeaves / 32u, 16u);
+    const uint64_t minSplitWeight = 2ULL * static_cast<uint64_t>(minSplitLeaves) * static_cast<uint64_t>(minSplitLeaves);
 
-    int count = 0;
-    while (!queue.empty() && (count + static_cast<int>(queue.size()) <= maxPairs))
+    struct SeedEntry
     {
-        Pair p = queue.back();
-        queue.pop_back();
+        NodeIndex a;
+        NodeIndex b;
+        uint64_t rawWeight;
+        uint64_t splitWeight;
+    };
 
-        NodeIndex A = p.a, B = p.b;
+    constexpr int MAX_HEAP_CAPACITY = 512;
+    const int limit = std::min(maxPairs, MAX_HEAP_CAPACITY);
+    const int maxExpansions = 96;
+
+    SeedEntry heap[MAX_HEAP_CAPACITY];
+    int heapSize = 0;
+
+    auto heapLess = [](const SeedEntry& x, const SeedEntry& y) noexcept {
+        return x.splitWeight < y.splitWeight;
+    };
+
+    auto pushSeed = [&](NodeIndex a, NodeIndex b) noexcept {
+        const NodeType& na = nodes[a];
+        const NodeType& nb = nodes[b];
+        uint64_t rawW = (a == b)
+            ? (static_cast<uint64_t>(na.leafCount) * static_cast<uint64_t>(na.leafCount))
+            : (2ULL * static_cast<uint64_t>(na.leafCount) * static_cast<uint64_t>(nb.leafCount));
+        bool canSplit = (a == b) ? (!na.isLeaf() && na.leafCount > minSplitLeaves)
+                                 : (!(na.isLeaf() && nb.isLeaf()) && rawW > minSplitWeight);
+        uint64_t splitW = canSplit ? rawW : 0ULL;
+        heap[heapSize++] = {a, b, rawW, splitW};
+        std::push_heap(heap, heap + heapSize, heapLess);
+    };
+
+    pushSeed(root, root);
+
+    int expansions = 0;
+    while (heapSize > 0 && heap[0].splitWeight > 0ULL && expansions < maxExpansions)
+    {
+        ++expansions;
+        std::pop_heap(heap, heap + heapSize, heapLess);
+        SeedEntry curr = heap[--heapSize];
+
+        NodeIndex A = curr.a;
+        NodeIndex B = curr.b;
         const NodeType& nodeA = nodes[A];
         const NodeType& nodeB = nodes[B];
-
-        if (!nodeA.isMoved() && !nodeB.isMoved())
-            continue;
-
-        if (!Traits::overlaps(nodeA.aabb, nodeB.aabb))
-            continue;
 
         if (A == B)
         {
             if (nodeA.isLeaf())
                 continue;
 
+            if (heapSize + 3 > limit)
+            {
+                curr.splitWeight = 0ULL;
+                heap[heapSize++] = curr;
+                std::push_heap(heap, heap + heapSize, heapLess);
+                break;
+            }
+
             NodeIndex c0 = nodeA.child[0];
             NodeIndex c1 = nodeA.child[1];
+            const NodeType& n0 = nodes[c0];
+            const NodeType& n1 = nodes[c1];
 
-            if (count + static_cast<int>(queue.size()) + 3 <= maxPairs)
-            {
-                if (nodes[c0].isMoved() && !nodes[c0].isLeaf())
-                    queue.push_back({c0, c0});
-                if (nodes[c1].isMoved() && !nodes[c1].isLeaf())
-                    queue.push_back({c1, c1});
-                if ((nodes[c0].isMoved() || nodes[c1].isMoved()) && Traits::overlaps(nodes[c0].aabb, nodes[c1].aabb))
-                    queue.push_back({c0, c1});
-            }
-            else
-            {
-                outA[count] = A;
-                outB[count] = B;
-                count++;
-            }
-            continue;
+            if (n0.isMoved() && !n0.isLeaf())
+                pushSeed(c0, c0);
+            if (n1.isMoved() && !n1.isLeaf())
+                pushSeed(c1, c1);
+            if ((n0.isMoved() || n1.isMoved()) && Traits::overlaps(n0.aabb, n1.aabb))
+                pushSeed(c0, c1);
         }
-
-        if (nodeA.isLeaf() && nodeB.isLeaf())
+        else
         {
-            outA[count] = A;
-            outB[count] = B;
-            count++;
-            continue;
-        }
+            if (heapSize + 2 > limit)
+            {
+                curr.splitWeight = 0ULL;
+                heap[heapSize++] = curr;
+                std::push_heap(heap, heap + heapSize, heapLess);
+                break;
+            }
 
-        if (count + static_cast<int>(queue.size()) + 2 <= maxPairs)
-        {
-            if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.constructionArea >= nodeB.constructionArea))
+            if (nodeB.isLeaf() || (!nodeA.isLeaf() && nodeA.leafCount >= nodeB.leafCount))
             {
                 NodeIndex c0 = nodeA.child[0];
                 NodeIndex c1 = nodeA.child[1];
-                if ((nodes[c0].isMoved() || nodeB.isMoved()) && Traits::overlaps(nodes[c0].aabb, nodeB.aabb))
-                    queue.push_back({c0, B});
-                if ((nodes[c1].isMoved() || nodeB.isMoved()) && Traits::overlaps(nodes[c1].aabb, nodeB.aabb))
-                    queue.push_back({c1, B});
+                const NodeType& n0 = nodes[c0];
+                const NodeType& n1 = nodes[c1];
+
+                if ((n0.isMoved() || nodeB.isMoved()) && Traits::overlaps(n0.aabb, nodeB.aabb))
+                    pushSeed(c0, B);
+                if ((n1.isMoved() || nodeB.isMoved()) && Traits::overlaps(n1.aabb, nodeB.aabb))
+                    pushSeed(c1, B);
             }
             else
             {
                 NodeIndex c0 = nodeB.child[0];
                 NodeIndex c1 = nodeB.child[1];
-                if ((nodeA.isMoved() || nodes[c0].isMoved()) && Traits::overlaps(nodeA.aabb, nodes[c0].aabb))
-                    queue.push_back({A, c0});
-                if ((nodeA.isMoved() || nodes[c1].isMoved()) && Traits::overlaps(nodeA.aabb, nodes[c1].aabb))
-                    queue.push_back({A, c1});
+                const NodeType& n0 = nodes[c0];
+                const NodeType& n1 = nodes[c1];
+
+                if ((nodeA.isMoved() || n0.isMoved()) && Traits::overlaps(nodeA.aabb, n0.aabb))
+                    pushSeed(A, c0);
+                if ((nodeA.isMoved() || n1.isMoved()) && Traits::overlaps(nodeA.aabb, n1.aabb))
+                    pushSeed(A, c1);
             }
         }
-        else
-        {
-            outA[count] = A;
-            outB[count] = B;
-            count++;
-        }
     }
 
-    while (!queue.empty() && count < maxPairs)
+    std::sort(heap, heap + heapSize, [](const SeedEntry& x, const SeedEntry& y) noexcept {
+        return x.rawWeight > y.rawWeight;
+    });
+
+    for (int i = 0; i < heapSize; ++i)
     {
-        Pair p = queue.back();
-        queue.pop_back();
-        const NodeType& nodeA = nodes[p.a];
-        const NodeType& nodeB = nodes[p.b];
-        if ((nodeA.isMoved() || nodeB.isMoved()) && Traits::overlaps(nodeA.aabb, nodeB.aabb))
-        {
-            outA[count] = p.a;
-            outB[count] = p.b;
-            count++;
-        }
+        outA[i] = heap[i].a;
+        outB[i] = heap[i].b;
     }
 
-    return count;
+    return heapSize;
 }
 
 // ============================================================================

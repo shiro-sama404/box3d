@@ -52,6 +52,20 @@ typedef struct Benchmark
 	int totalStepCount;
 } Benchmark;
 
+typedef struct b3BroadPhaseProfile
+{
+	float crossMs;
+	float seedsMs;
+	float selfMs;
+	float sortContactsMs;
+	float workerSelfMaxMs;
+	float workerSelfMeanMs;
+	float loadImbalance;
+	int seedCount;
+} b3BroadPhaseProfile;
+
+extern b3BroadPhaseProfile b3World_GetBroadPhaseProfileInternal( b3WorldId worldId );
+
 // SDBVH Integration: Per-frame metrics record structure
 typedef struct StepRecord
 {
@@ -71,6 +85,14 @@ typedef struct StepRecord
 	int idealTreeHeight;
 	float qualityRatioStandard;
 	float qualityRatioNormalized;
+	float bpCrossMs;
+	float bpSeedsMs;
+	float bpSelfMs;
+	float bpSortMs;
+	float bpWorkerMaxMs;
+	float bpWorkerMeanMs;
+	float bpImbalance;
+	int bpSeedCount;
 } StepRecord;
 
 static void MinProfile( b3Profile* p1, const b3Profile* p2 )
@@ -694,6 +716,7 @@ int main( int argc, char** argv )
 				b3Counters cnt0 = b3World_GetCounters( worldId );
 				b3BroadPhaseQualityMetrics qm0 =
 					b3World_GetBroadPhaseQualityMetrics( worldId, b3_dynamicBody, groundTruthMode, 1.0f, 1.0f );
+				b3BroadPhaseProfile bpp0 = b3World_GetBroadPhaseProfileInternal( worldId );
 				if ( runIndex == 0 )
 				{
 					stepRecords[0].frame = 0;
@@ -712,6 +735,14 @@ int main( int argc, char** argv )
 					stepRecords[0].idealTreeHeight = qm0.ideal.treeHeight;
 					stepRecords[0].qualityRatioStandard = qm0.qualityRatioStandard;
 					stepRecords[0].qualityRatioNormalized = qm0.qualityRatioNormalized;
+					stepRecords[0].bpCrossMs = bpp0.crossMs;
+					stepRecords[0].bpSeedsMs = bpp0.seedsMs;
+					stepRecords[0].bpSelfMs = bpp0.selfMs;
+					stepRecords[0].bpSortMs = bpp0.sortContactsMs;
+					stepRecords[0].bpWorkerMaxMs = bpp0.workerSelfMaxMs;
+					stepRecords[0].bpWorkerMeanMs = bpp0.workerSelfMeanMs;
+					stepRecords[0].bpImbalance = bpp0.loadImbalance;
+					stepRecords[0].bpSeedCount = bpp0.seedCount;
 				}
 
 				uint64_t ticks = b3GetTicks();
@@ -733,6 +764,7 @@ int main( int argc, char** argv )
 						b3Counters cnt = b3World_GetCounters( worldId );
 						b3BroadPhaseQualityMetrics qm =
 							b3World_GetBroadPhaseQualityMetrics( worldId, b3_dynamicBody, groundTruthMode, 1.0f, 1.0f );
+						b3BroadPhaseProfile bpp = b3World_GetBroadPhaseProfileInternal( worldId );
 						stepRecords[stepIndex].frame = stepIndex;
 						stepRecords[stepIndex].stepTime = profile.step;
 						stepRecords[stepIndex].pairsTime = profile.pairs;
@@ -749,6 +781,14 @@ int main( int argc, char** argv )
 						stepRecords[stepIndex].idealTreeHeight = qm.ideal.treeHeight;
 						stepRecords[stepIndex].qualityRatioStandard = qm.qualityRatioStandard;
 						stepRecords[stepIndex].qualityRatioNormalized = qm.qualityRatioNormalized;
+						stepRecords[stepIndex].bpCrossMs = bpp.crossMs;
+						stepRecords[stepIndex].bpSeedsMs = bpp.seedsMs;
+						stepRecords[stepIndex].bpSelfMs = bpp.selfMs;
+						stepRecords[stepIndex].bpSortMs = bpp.sortContactsMs;
+						stepRecords[stepIndex].bpWorkerMaxMs = bpp.workerSelfMaxMs;
+						stepRecords[stepIndex].bpWorkerMeanMs = bpp.workerSelfMeanMs;
+						stepRecords[stepIndex].bpImbalance = bpp.loadImbalance;
+						stepRecords[stepIndex].bpSeedCount = bpp.seedCount;
 					}
 				}
 
@@ -806,14 +846,19 @@ int main( int argc, char** argv )
 				{
 					fprintf( csvFile, "frame,step_ms,pairs_ms,collide_ms,solve_ms,contact_count,tree_height,leaf_count,node_"
 									  "count,sah_standard,sah_normalized,ideal_sah_standard,ideal_sah_normalized,ideal_tree_"
-									  "height,quality_ratio_standard,quality_ratio_normalized\n" );
+									  "height,quality_ratio_standard,quality_ratio_normalized,bp_cross_ms,bp_seeds_ms,bp_self_ms,"
+									  "bp_sort_ms,bp_worker_max_ms,bp_worker_mean_ms,bp_imbalance,bp_seed_count\n" );
 					for ( int s = 0; s < stepCount; ++s )
 					{
 						StepRecord* r = stepRecords + s;
-						fprintf( csvFile, "%d,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f\n", r->frame,
-								 r->stepTime, r->pairsTime, r->collideTime, r->solveTime, r->contactCount, r->treeHeight,
-								 r->leafCount, r->nodeCount, r->sahStandard, r->sahNormalized, r->idealSahStandard,
-								 r->idealSahNormalized, r->idealTreeHeight, r->qualityRatioStandard, r->qualityRatioNormalized );
+						fprintf( csvFile,
+								 "%d,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+								 "%.4f,%.4f,%d\n",
+								 r->frame, r->stepTime, r->pairsTime, r->collideTime, r->solveTime, r->contactCount,
+								 r->treeHeight, r->leafCount, r->nodeCount, r->sahStandard, r->sahNormalized,
+								 r->idealSahStandard, r->idealSahNormalized, r->idealTreeHeight, r->qualityRatioStandard,
+								 r->qualityRatioNormalized, r->bpCrossMs, r->bpSeedsMs, r->bpSelfMs, r->bpSortMs,
+								 r->bpWorkerMaxMs, r->bpWorkerMeanMs, r->bpImbalance, r->bpSeedCount );
 					}
 					fclose( csvFile );
 					printf( "    -> Exported CSV metrics to: %s\n", csvFileName );

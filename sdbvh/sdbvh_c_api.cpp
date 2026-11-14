@@ -111,9 +111,11 @@ int32_t sdbvh_gather_seeds( sdbvh_tree_t* tree, sdbvh_seed_t* seeds, int32_t max
 		return 0;
 	sdbvh::SDBVH<int32_t>* bvh = reinterpret_cast<sdbvh::SDBVH<int32_t>*>( tree );
 
-	std::vector<sdbvh::NodeIndex> outA( maxSeeds );
-	std::vector<sdbvh::NodeIndex> outB( maxSeeds );
-	int seedCount = bvh->gatherSubtreePairs( outA.data(), outB.data(), maxSeeds );
+	constexpr int32_t MAX_STACK_SEEDS = 512;
+	int32_t clampedMax = maxSeeds < MAX_STACK_SEEDS ? maxSeeds : MAX_STACK_SEEDS;
+	sdbvh::NodeIndex outA[MAX_STACK_SEEDS];
+	sdbvh::NodeIndex outB[MAX_STACK_SEEDS];
+	int seedCount = bvh->gatherSubtreePairs( outA, outB, clampedMax );
 
 	for ( int i = 0; i < seedCount; ++i )
 	{

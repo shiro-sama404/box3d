@@ -116,6 +116,7 @@ typedef struct b3TaskContext
 	int lineCount;
 
 	int manifoldCounts[B3_CONTACT_MANIFOLD_COUNT_BUCKETS];
+	float selfPairsBusyMs;
 	// Prevent false sharing
 	char cacheLine[64];
 } b3TaskContext;

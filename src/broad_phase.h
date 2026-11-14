@@ -21,6 +21,18 @@ typedef struct b3World b3World;
 #define B3_PROXY_ID( KEY ) ( ( KEY ) >> 2 )
 #define B3_PROXY_KEY( ID, TYPE ) ( ( ( ID ) << 2 ) | ( TYPE ) )
 
+typedef struct b3BroadPhaseProfile
+{
+	float crossMs;
+	float seedsMs;
+	float selfMs;
+	float sortContactsMs;
+	float workerSelfMaxMs;
+	float workerSelfMeanMs;
+	float loadImbalance;
+	int seedCount;
+} b3BroadPhaseProfile;
+
 /// The broad-phase is used for computing pairs and performing volume queries and ray casts.
 /// This broad-phase does not persist pairs. Instead, this reports potentially new pairs.
 /// It is up to the client to consume the new pairs and to track subsequent overlap.
@@ -53,6 +65,7 @@ typedef struct b3BroadPhase
 	int microRebuildInterval;
 	int microCooldownCounter;
 	bool microEnabled;
+	b3BroadPhaseProfile lastProfile;
 } b3BroadPhase;
 
 void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity, bool useSDBVH );

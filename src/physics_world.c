@@ -2185,6 +2185,16 @@ b3BroadPhaseQualityMetrics b3World_GetBroadPhaseQualityMetrics( b3WorldId worldI
 	return metrics;
 }
 
+b3BroadPhaseProfile b3World_GetBroadPhaseProfileInternal( b3WorldId worldId )
+{
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return (b3BroadPhaseProfile){ 0 };
+	}
+	return world->broadPhase.lastProfile;
+}
+
 float b3World_GetContactRecycleDistance( b3WorldId worldId )
 {
 	b3World* world = b3GetWorldFromId( worldId );
